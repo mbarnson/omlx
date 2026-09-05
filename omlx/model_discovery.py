@@ -25,8 +25,19 @@ from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-ModelType = Literal["llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts"]
-EngineType = Literal["batched", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts"]
+ModelType = Literal[
+    "llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts"
+]
+EngineType = Literal[
+    "uno",
+    "batched",
+    "vlm",
+    "embedding",
+    "reranker",
+    "audio_stt",
+    "audio_tts",
+    "audio_sts",
+]
 
 # Known VLM (Vision-Language Model) types from mlx-vlm
 VLM_MODEL_TYPES = {
@@ -1411,6 +1422,16 @@ def _is_hf_cache_mlx_compatible(model_dir: Path, source_repo_id: str) -> bool:
     """Heuristic for HF cache entries that can be loaded without conversion."""
     if not _is_model_dir(model_dir):
         return False
+    try:
+        config = json.loads((model_dir / "config.json").read_text())
+        if config.get("model_type") == "k2_horizon" and not config.get("model_file"):
+            from .patches.k2_horizon.checkpoint import checkpoint_files
+
+            checkpoint_files(model_dir)
+            return True
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        logger.debug("Invalid K2 cache checkpoint %s: %s", source_repo_id, error)
+        return False
     if not list(model_dir.glob("model*.safetensors")):
         logger.debug(f"Skipping HF cache model without model*.safetensors: {source_repo_id}")
         return False
@@ -1433,6 +1454,39 @@ def _is_hf_cache_mlx_compatible(model_dir: Path, source_repo_id: str) -> bool:
 
     logger.debug(f"Skipping non-MLX HF cache model: {source_repo_id}")
     return False
+
+
+def _register_uno(
+    models, model_dir, model_id, *, source_type="local", source_repo_id=None
+):
+    """Register only explicit Uno bundles with a complete local base dependency."""
+    from .uno_bundle import is_uno_candidate, resolve_uno_bundle
+
+    if model_id in models:
+        logger.warning(
+            "Duplicate Uno model_id %s; keeping first registration", model_id
+        )
+        return True
+    try:
+        if not is_uno_candidate(model_dir, source_repo_id):
+            return False
+        bundle = resolve_uno_bundle(model_dir, source_repo_id=source_repo_id)
+        models[model_id] = DiscoveredModel(
+            model_id=model_id,
+            model_path=str(model_dir),
+            model_type="llm",
+            engine_type="uno",
+            estimated_size=bundle.estimated_size,
+            config_model_type="k2_horizon",
+            thinking_default=detect_thinking_default(bundle.base_path),
+            preserve_thinking_default=detect_preserve_thinking(bundle.base_path),
+            model_context_length=bundle.context_length,
+            source_type=source_type,
+            source_repo_id=source_repo_id,
+        )
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+        logger.warning("Cannot register Uno model %s: %s", model_id, error)
+    return True
 
 
 def _register_model(
@@ -1623,6 +1677,8 @@ def discover_models(model_dir: Path) -> dict[str, DiscoveredModel]:
         if not _is_readable_dir(subdir, "model entry") or subdir.name.startswith("."):
             continue
 
+        if _register_uno(models, subdir, subdir.name):
+            continue
         if _is_adapter_dir(subdir):
             logger.info(
                 f"Skipping LoRA adapter: {subdir.name} "
@@ -1635,6 +1691,14 @@ def discover_models(model_dir: Path) -> dict[str, DiscoveredModel]:
             # HF Hub cache entry: models--Org--Name/snapshots/<hash>/
             hf_resolved = _resolve_hf_cache_entry(subdir)
             if hf_resolved is not None:
+                if _register_uno(
+                    models,
+                    hf_resolved.snapshot_path,
+                    hf_resolved.model_id,
+                    source_type="hf_cache",
+                    source_repo_id=hf_resolved.source_repo_id,
+                ):
+                    continue
                 if _is_hf_cache_mlx_compatible(
                     hf_resolved.snapshot_path,
                     hf_resolved.source_repo_id,
@@ -1656,6 +1720,9 @@ def discover_models(model_dir: Path) -> dict[str, DiscoveredModel]:
                     or child.name.startswith(".")
                 ):
                     continue
+                if _register_uno(models, child, child.name):
+                    has_children = True
+                    continue
                 if _is_adapter_dir(child):
                     logger.info(
                         f"Skipping LoRA adapter: {child.name} "
@@ -1674,6 +1741,8 @@ def discover_models(model_dir: Path) -> dict[str, DiscoveredModel]:
     # Fallback: if no models found and the directory itself is a model, register it.
     # This supports pointing directly at a single model folder, e.g.:
     #   /Models/Qwen3.5-9B-MLX-4bit/  (contains config.json and weight files)
+    if not models and _register_uno(models, model_dir, model_dir.name):
+        return models
     if not models and _is_model_dir(model_dir):
         _register_model(models, model_dir, model_dir.name)
 

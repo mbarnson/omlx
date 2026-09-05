@@ -233,15 +233,11 @@ def test_get_classes_resolves_k2_horizon():
         ("norm_topk_prob", False),
         ("router_score_func", "softmax"),
         ("attention_gate_func", "silu"),
-        ("attention_gate_func", None),
-        ("layernorm_num_groups", 1),
         ("query_key_norm", True),
-        ("rope_head_dim", 8),
-        ("rope_parameters", {"rope_theta": 1e7, "rope_type": "yarn"}),
+        ("rope_parameters", {"rope_theta": 1e7, "rope_type": "unknown"}),
         ("use_sliding_window", True),
         ("sliding_window", 4096),
         ("mlp_only_layers", [0, 1, 2]),
-        ("router_scaling_factor", None),
     ],
 )
 def test_unsupported_config_variants_fail_naming_the_field(field, value):

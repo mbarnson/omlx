@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Implement the K2 Horizon MoVA architecture validated against the 36B-A4B checkpoint."""
+"""Implement dense, MoE, and MoVA K2 Horizon language models."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from mlx_lm.models.base import (
 )
 from mlx_lm.models.switch_layers import SwitchGLU, SwitchLinear
 
-# The source checkpoint computed each router as two BF16 partial GEMMs.
+# The validated MoVA checkpoint computed routers as two BF16 partial GEMMs.
+# The released 375B HF reference uses an ordinary full-width BF16 linear.
 SOURCE_ROUTER_GEMM_PARTITIONS = 2
 _LN2 = math.log(2.0)
 
@@ -39,15 +40,17 @@ class ModelArgs(BaseModelArgs):
     num_experts_per_tok: int
     moe_intermediate_size: int
     num_shared_experts: int
-    mova_num_experts: int
-    mova_num_experts_per_tok: int
     moe_gate_bias: bool
     norm_topk_prob: bool
     router_score_func: str
-    router_scaling_factor: float
-    attention_gate_func: str | None
+    router_scaling_factor: float | None
     query_key_norm: bool
     rope_parameters: dict[str, Any]
+    mova_num_experts: int = 0
+    mova_num_experts_per_tok: int = 0
+    attention_gate_func: str | None = None
+    rope_theta: float | None = None
+    hidden_act: str = "silu"
     decoder_sparse_step: int = 1
     attention_bias: bool = False
     rope_head_dim: int | None = None
@@ -57,56 +60,80 @@ class ModelArgs(BaseModelArgs):
     max_position_embeddings: int = 524288
 
     def __post_init__(self):
-        self.rope_theta = float(self.rope_parameters["rope_theta"])
-        rope_type = self.rope_parameters.get("rope_type", "default")
-        self._require(rope_type == "default", "rope_parameters.rope_type", rope_type)
+        self.rope_parameters = dict(self.rope_parameters)
+        nested_theta = self.rope_parameters.get("rope_theta")
+        if self.rope_theta is not None and nested_theta is not None:
+            self._require(
+                self.rope_theta == nested_theta, "rope_theta", self.rope_theta
+            )
+        self.rope_theta = nested_theta if nested_theta is not None else self.rope_theta
         self._require(
-            self.rope_head_dim in (None, self.head_dim),
+            isinstance(self.rope_theta, (int, float))
+            and math.isfinite(self.rope_theta)
+            and self.rope_theta > 1,
+            "rope_theta",
+            self.rope_theta,
+        )
+        self.rope_parameters["rope_theta"] = self.rope_theta
+        rope_type = self.rope_parameters.get("rope_type", "default")
+        self._require(
+            rope_type in ("default", "yarn"), "rope_parameters.rope_type", rope_type
+        )
+        self.rope_head_dim = (
+            self.head_dim if self.rope_head_dim is None else self.rope_head_dim
+        )
+        self._require(
+            0 < self.rope_head_dim <= self.head_dim and self.rope_head_dim % 2 == 0,
             "rope_head_dim",
             self.rope_head_dim,
         )
+        if rope_type == "yarn":
+            for key in (
+                "factor",
+                "original_max_position_embeddings",
+                "beta_fast",
+                "beta_slow",
+                "attention_factor",
+            ):
+                value = self.rope_parameters.get(key)
+                self._require(
+                    isinstance(value, (int, float))
+                    and math.isfinite(value)
+                    and value > 0,
+                    f"rope_parameters.{key}",
+                    value,
+                )
+            self._require(
+                isinstance(self.rope_parameters.get("truncate", True), bool),
+                "rope_parameters.truncate",
+                self.rope_parameters.get("truncate"),
+            )
+        self._require(self.hidden_act == "silu", "hidden_act", self.hidden_act)
         self._require(not self.use_sliding_window, "use_sliding_window", True)
         self._require(
             self.sliding_window is None, "sliding_window", self.sliding_window
         )
         self._require(not self.query_key_norm, "query_key_norm", True)
         self._require(
-            self.attention_gate_func == "softplus",
+            self.attention_gate_func in (None, "softplus"),
             "attention_gate_func",
             self.attention_gate_func,
         )
         self._require(
-            self.router_score_func == "sigmoid",
-            "router_score_func",
-            self.router_score_func,
-        )
-        self._require(self.norm_topk_prob, "norm_topk_prob", False)
-        self._require(self.moe_gate_bias, "moe_gate_bias", False)
-        self._require(
-            self.layernorm_num_groups == 2,
+            self.layernorm_num_groups in (1, 2, 4),
             "layernorm_num_groups",
             self.layernorm_num_groups,
         )
         self._require(
-            self.hidden_size
-            % (self.layernorm_num_groups * SOURCE_ROUTER_GEMM_PARTITIONS)
-            == 0,
+            self.hidden_size > 0 and self.hidden_size % self.layernorm_num_groups == 0,
             "hidden_size",
             self.hidden_size,
         )
         self._require(
-            self.num_shared_experts == 1, "num_shared_experts", self.num_shared_experts
-        )
-        self._require(
-            0 < self.num_experts_per_tok <= self.num_experts and self.num_experts > 0,
-            "num_experts_per_tok",
-            self.num_experts_per_tok,
-        )
-        self._require(
-            0 < self.mova_num_experts_per_tok <= self.mova_num_experts
-            and self.mova_num_experts > 0,
-            "mova_num_experts_per_tok",
-            self.mova_num_experts_per_tok,
+            self.num_key_value_heads > 0
+            and self.num_attention_heads % self.num_key_value_heads == 0,
+            "num_key_value_heads",
+            self.num_key_value_heads,
         )
         self._require(
             self.decoder_sparse_step > 0,
@@ -118,31 +145,129 @@ class ModelArgs(BaseModelArgs):
             "mlp_only_layers",
             self.mlp_only_layers,
         )
+        self._require(self.num_experts >= 0, "num_experts", self.num_experts)
         self._require(
-            any(self.is_sparse_layer(i) for i in range(self.num_hidden_layers)),
-            "mlp_only_layers",
-            self.mlp_only_layers,
+            self.mova_num_experts >= 0, "mova_num_experts", self.mova_num_experts
         )
-        self._require(
-            isinstance(self.router_scaling_factor, (int, float))
-            and self.router_scaling_factor > 0,
-            "router_scaling_factor",
-            self.router_scaling_factor,
-        )
+        if self.router_scaling_factor is None:
+            self.router_scaling_factor = 1.0
+        if self.num_experts:
+            self._require(
+                0 < self.num_experts_per_tok <= self.num_experts,
+                "num_experts_per_tok",
+                self.num_experts_per_tok,
+            )
+            self._require(
+                self.num_shared_experts == 1,
+                "num_shared_experts",
+                self.num_shared_experts,
+            )
+            self._require(
+                self.moe_intermediate_size > 0,
+                "moe_intermediate_size",
+                self.moe_intermediate_size,
+            )
+            self._require(
+                any(self.is_sparse_layer(i) for i in range(self.num_hidden_layers)),
+                "mlp_only_layers",
+                self.mlp_only_layers,
+            )
+            self._require(
+                self.router_score_func == "sigmoid",
+                "router_score_func",
+                self.router_score_func,
+            )
+            self._require(self.norm_topk_prob, "norm_topk_prob", False)
+            self._require(self.moe_gate_bias, "moe_gate_bias", False)
+            self._require(
+                self.hidden_size % SOURCE_ROUTER_GEMM_PARTITIONS == 0,
+                "hidden_size",
+                self.hidden_size,
+            )
+            self._require(
+                isinstance(self.router_scaling_factor, (int, float))
+                and math.isfinite(self.router_scaling_factor)
+                and self.router_scaling_factor > 0,
+                "router_scaling_factor",
+                self.router_scaling_factor,
+            )
+        else:
+            for key in (
+                "num_experts_per_tok",
+                "num_shared_experts",
+                "moe_intermediate_size",
+                "mova_num_experts",
+            ):
+                self._require(getattr(self, key) == 0, key, getattr(self, key))
+        if self.mova_num_experts:
+            self._require(
+                0 < self.mova_num_experts_per_tok <= self.mova_num_experts,
+                "mova_num_experts_per_tok",
+                self.mova_num_experts_per_tok,
+            )
+        else:
+            self._require(
+                self.mova_num_experts_per_tok == 0,
+                "mova_num_experts_per_tok",
+                self.mova_num_experts_per_tok,
+            )
 
     @staticmethod
     def _require(condition: bool, field: str, value: Any) -> None:
         if not condition:
-            raise ValueError(
-                f"Unsupported K2 Horizon config: {field}={value!r} is not the "
-                "released K2-Horizon-MoVA-36B-A4B semantics"
-            )
+            raise ValueError(f"Unsupported K2 Horizon config: {field}={value!r}")
 
     def is_sparse_layer(self, layer_idx: int) -> bool:
         return (
-            layer_idx not in self.mlp_only_layers
+            self.num_experts > 0
+            and layer_idx not in self.mlp_only_layers
             and (layer_idx + 1) % self.decoder_sparse_step == 0
         )
+
+
+class YarnRoPE(nn.Module):
+    """Apply the released YaRN frequencies and BF16 cos/sin rounding."""
+
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.dims = dims = args.rope_head_dim
+        params = args.rope_parameters
+        self.attention_factor = params["attention_factor"]
+        original = params["original_max_position_embeddings"]
+
+        def correction(rotations):
+            return (
+                dims
+                * math.log(original / (rotations * 2 * math.pi))
+                / (2 * math.log(args.rope_theta))
+            )
+
+        low, high = correction(params["beta_fast"]), correction(params["beta_slow"])
+        if params.get("truncate", True):
+            low, high = math.floor(low), math.ceil(high)
+        low, high = max(low, 0), min(high, dims - 1)
+        if low == high:
+            high += 0.001
+        ramp = mx.clip(
+            (mx.arange(dims // 2, dtype=mx.float32) - low) / (high - low), 0, 1
+        )
+        freq = args.rope_theta ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims)
+        self._inv_freq = ramp / (params["factor"] * freq) + (1 - ramp) / freq
+
+    def __call__(self, x, offset=0):
+        positions = (
+            mx.arange(x.shape[-2], dtype=mx.float32) + mx.array(offset)[..., None]
+        )
+        angles = positions[..., None] * self._inv_freq
+        cos = (mx.cos(angles) * self.attention_factor).astype(x.dtype)
+        sin = (mx.sin(angles) * self.attention_factor).astype(x.dtype)
+        if cos.ndim == 3:
+            cos, sin = cos[:, None], sin[:, None]
+        first, second = x[..., : self.dims // 2], x[..., self.dims // 2 : self.dims]
+        rotated = mx.concatenate(
+            [first * cos - second * sin, second * cos + first * sin], axis=-1
+        )
+        return mx.concatenate([rotated, x[..., self.dims :]], axis=-1)
 
 
 class GroupedRMSNorm(nn.Module):
@@ -160,15 +285,21 @@ class GroupedRMSNorm(nn.Module):
         return (self.weight * normed).astype(x.dtype)
 
 
-def router_logits(x: mx.array, weight: mx.array) -> mx.array:
-    """Sum FP32 casts of two BF16 partial GEMMs, matching the source checkpoint."""
+def router_logits(
+    x: mx.array, weight: mx.array, partitions: int = SOURCE_ROUTER_GEMM_PARTITIONS
+) -> mx.array:
+    """Respect each sparse release's router rounding contract."""
     if x.dtype != mx.bfloat16 or weight.dtype != mx.bfloat16:
         raise ValueError(
             "K2 Horizon routers require BF16 activations and weights; got "
             f"{x.dtype} and {weight.dtype}"
         )
-    x_parts = mx.split(x, SOURCE_ROUTER_GEMM_PARTITIONS, axis=-1)
-    w_parts = mx.split(weight, SOURCE_ROUTER_GEMM_PARTITIONS, axis=-1)
+    if partitions == 1:
+        return (x @ weight.T).astype(mx.float32)
+    if partitions != SOURCE_ROUTER_GEMM_PARTITIONS:
+        raise ValueError("Unsupported K2 router partition count")
+    x_parts = mx.split(x, partitions, axis=-1)
+    w_parts = mx.split(weight, partitions, axis=-1)
     logits = (x_parts[0] @ w_parts[0].T).astype(mx.float32)
     for x_part, w_part in zip(x_parts[1:], w_parts[1:]):
         logits = logits + (x_part @ w_part.T).astype(mx.float32)
@@ -181,9 +312,11 @@ def route(
     bias: mx.array,
     top_k: int,
     scaling_factor: float,
+    *,
+    partitions: int = SOURCE_ROUTER_GEMM_PARTITIONS,
 ) -> tuple[mx.array, mx.array]:
     """Return selected expert indices and their normalized, scaled FP32 weights."""
-    scores = mx.sigmoid(router_logits(x, weight))
+    scores = mx.sigmoid(router_logits(x, weight, partitions))
     selection = scores + bias.astype(mx.float32)
     inds = mx.argpartition(-selection, kth=top_k - 1, axis=-1)[..., :top_k]
     weights = mx.take_along_axis(scores, inds, axis=-1)
@@ -195,6 +328,37 @@ def softplus_beta_ln2(x: mx.array) -> mx.array:
     """PyTorch ``softplus(x, beta=ln 2)`` computed in FP32 without overflow."""
     x32 = x.astype(mx.float32)
     return (mx.logaddexp(x32 * _LN2, 0.0) / _LN2).astype(x.dtype)
+
+
+def _project(layer, x, lora_mask):
+    conditional = getattr(layer, "conditional_forward", None)
+    return conditional(x, lora_mask) if conditional is not None else layer(x)
+
+
+class PartialRoPE(nn.Module):
+    """Rotate leading pairs in the checkpoint's split-half head layout."""
+
+    def __init__(self, args):
+        super().__init__()
+        self.half = args.head_dim // 2
+        self.rotated_half = args.rope_head_dim // 2
+        self.rope = nn.RoPE(args.rope_head_dim, traditional=False, base=args.rope_theta)
+
+    def __call__(self, x, offset=0):
+        half, rotated = self.half, self.rotated_half
+        paired = mx.concatenate(
+            [x[..., :rotated], x[..., half : half + rotated]], axis=-1
+        )
+        result = self.rope(paired, offset=offset)
+        return mx.concatenate(
+            [
+                result[..., :rotated],
+                x[..., rotated:half],
+                result[..., rotated:],
+                x[..., half + rotated :],
+            ],
+            axis=-1,
+        )
 
 
 class Attention(nn.Module):
@@ -213,7 +377,8 @@ class Attention(nn.Module):
         self.q_proj = nn.Linear(args.hidden_size, q_dims, bias=args.attention_bias)
         self.k_proj = nn.Linear(args.hidden_size, kv_dims, bias=args.attention_bias)
         self.o_proj = nn.Linear(q_dims, args.hidden_size, bias=args.attention_bias)
-        self.gate_proj = nn.Linear(args.hidden_size, q_dims, bias=False)
+        if args.attention_gate_func is not None:
+            self.gate_proj = nn.Linear(args.hidden_size, q_dims, bias=False)
         if mova:
             self.v_router = nn.Linear(
                 args.hidden_size, args.mova_num_experts, bias=False
@@ -224,11 +389,19 @@ class Attention(nn.Module):
             )
         else:
             self.v_proj = nn.Linear(args.hidden_size, kv_dims, bias=args.attention_bias)
-        self.rope = nn.RoPE(self.head_dim, traditional=False, base=args.rope_theta)
+        self.rope = (
+            YarnRoPE(args)
+            if args.rope_parameters.get("rope_type") == "yarn"
+            else (
+                PartialRoPE(args)
+                if args.rope_head_dim < args.head_dim
+                else nn.RoPE(args.head_dim, traditional=False, base=args.rope_theta)
+            )
+        )
 
-    def _values(self, x: mx.array) -> mx.array:
+    def _values(self, x: mx.array, lora_mask=None) -> mx.array:
         if not self.mova:
-            return self.v_proj(x)
+            return _project(self.v_proj, x, lora_mask)
         inds, weights = route(
             x, self.v_router.weight, self.v_expert_bias, self.top_k, self.scaling_factor
         )
@@ -237,21 +410,25 @@ class Attention(nn.Module):
         return routed.sum(axis=-2)
 
     def __call__(
-        self, x: mx.array, mask: mx.array | None = None, cache: Any = None
+        self,
+        x: mx.array,
+        mask: mx.array | None = None,
+        cache: Any = None,
+        lora_mask=None,
     ) -> mx.array:
         batch, length, _ = x.shape
         queries = (
-            self.q_proj(x)
+            _project(self.q_proj, x, lora_mask)
             .reshape(batch, length, self.n_heads, -1)
             .transpose(0, 2, 1, 3)
         )
         keys = (
-            self.k_proj(x)
+            _project(self.k_proj, x, lora_mask)
             .reshape(batch, length, self.n_kv_heads, -1)
             .transpose(0, 2, 1, 3)
         )
         values = (
-            self._values(x)
+            self._values(x, lora_mask)
             .reshape(batch, length, self.n_kv_heads, -1)
             .transpose(0, 2, 1, 3)
         )
@@ -268,10 +445,12 @@ class Attention(nn.Module):
             queries, keys, values, cache=cache, scale=self.scale, mask=mask
         )
         output = output.transpose(0, 2, 1, 3)
-        gate = softplus_beta_ln2(self.gate_proj(x)).reshape(
-            batch, length, self.n_heads, -1
-        )
-        return self.o_proj((output * gate).reshape(batch, length, -1))
+        if "gate_proj" in self:
+            gate = softplus_beta_ln2(self.gate_proj(x)).reshape(
+                batch, length, self.n_heads, -1
+            )
+            output = output * gate
+        return _project(self.o_proj, output.reshape(batch, length, -1), lora_mask)
 
 
 class MLP(nn.Module):
@@ -281,8 +460,11 @@ class MLP(nn.Module):
         self.up_proj = nn.Linear(dims, hidden_dims, bias=False)
         self.down_proj = nn.Linear(hidden_dims, dims, bias=False)
 
-    def __call__(self, x: mx.array) -> mx.array:
-        return self.down_proj(swiglu(self.gate_proj(x), self.up_proj(x)))
+    def __call__(self, x: mx.array, lora_mask=None) -> mx.array:
+        h = swiglu(
+            _project(self.gate_proj, x, lora_mask), _project(self.up_proj, x, lora_mask)
+        )
+        return _project(self.down_proj, h, lora_mask)
 
 
 class SparseMoeBlock(nn.Module):
@@ -290,6 +472,9 @@ class SparseMoeBlock(nn.Module):
         super().__init__()
         self.top_k = args.num_experts_per_tok
         self.scaling_factor = args.router_scaling_factor
+        self.router_partitions = (
+            SOURCE_ROUTER_GEMM_PARTITIONS if args.mova_num_experts else 1
+        )
         self.gate = nn.Linear(args.hidden_size, args.num_experts, bias=False)
         self.expert_bias = mx.zeros((args.num_experts,))
         self.experts = SwitchGLU(
@@ -299,9 +484,16 @@ class SparseMoeBlock(nn.Module):
             args.hidden_size, args.moe_intermediate_size * args.num_shared_experts
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, lora_mask=None) -> mx.array:
+        if lora_mask is not None:
+            raise ValueError("Uno adapters require a dense K2 base")
         inds, weights = route(
-            x, self.gate.weight, self.expert_bias, self.top_k, self.scaling_factor
+            x,
+            self.gate.weight,
+            self.expert_bias,
+            self.top_k,
+            self.scaling_factor,
+            partitions=self.router_partitions,
         )
         routed = self.experts(x, inds) * weights.astype(x.dtype)[..., None]
         return routed.sum(axis=-2) + self.shared_experts(x)
@@ -311,7 +503,7 @@ class DecoderLayer(nn.Module):
     def __init__(self, args: ModelArgs, layer_idx: int):
         super().__init__()
         sparse = args.is_sparse_layer(layer_idx)
-        self.self_attn = Attention(args, mova=sparse)
+        self.self_attn = Attention(args, mova=sparse and args.mova_num_experts > 0)
         if sparse:
             self.mlp = SparseMoeBlock(args)
         else:
@@ -324,10 +516,14 @@ class DecoderLayer(nn.Module):
         )
 
     def __call__(
-        self, x: mx.array, mask: mx.array | None = None, cache: Any = None
+        self,
+        x: mx.array,
+        mask: mx.array | None = None,
+        cache: Any = None,
+        lora_mask=None,
     ) -> mx.array:
-        h = x + self.self_attn(self.input_layernorm(x), mask, cache)
-        return h + self.mlp(self.post_attention_layernorm(h))
+        h = x + self.self_attn(self.input_layernorm(x), mask, cache, lora_mask)
+        return h + self.mlp(self.post_attention_layernorm(h), lora_mask=lora_mask)
 
 
 class K2HorizonModel(nn.Module):
@@ -339,13 +535,13 @@ class K2HorizonModel(nn.Module):
             args.hidden_size, args.layernorm_num_groups, args.rms_norm_eps
         )
 
-    def __call__(self, inputs: mx.array, cache: Any = None) -> mx.array:
+    def __call__(self, inputs: mx.array, cache: Any = None, lora_mask=None) -> mx.array:
         h = self.embed_tokens(inputs)
         if cache is None:
             cache = [None] * len(self.layers)
         mask = create_attention_mask(h, cache[0])
         for layer, c in zip(self.layers, cache):
-            h = layer(h, mask, c)
+            h = layer(h, mask, c, lora_mask)
         return self.norm(h)
 
 
@@ -358,8 +554,8 @@ class Model(nn.Module):
         if not args.tie_word_embeddings:
             self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
 
-    def __call__(self, inputs: mx.array, cache: Any = None) -> mx.array:
-        out = self.model(inputs, cache)
+    def __call__(self, inputs: mx.array, cache: Any = None, lora_mask=None) -> mx.array:
+        out = self.model(inputs, cache, lora_mask)
         if self.args.tie_word_embeddings:
             return self.model.embed_tokens.as_linear(out)
         return self.lm_head(out)
@@ -378,14 +574,15 @@ class Model(nn.Module):
                         for e in range(self.args.num_experts)
                     ],
                 )
-            _stack_experts(
-                weights,
-                f"{prefix}.self_attn.v_experts.weight",
-                [
-                    f"{prefix}.self_attn.v_experts.{e}.weight"
-                    for e in range(self.args.mova_num_experts)
-                ],
-            )
+            if self.args.mova_num_experts:
+                _stack_experts(
+                    weights,
+                    f"{prefix}.self_attn.v_experts.weight",
+                    [
+                        f"{prefix}.self_attn.v_experts.{e}.weight"
+                        for e in range(self.args.mova_num_experts)
+                    ],
+                )
             _rename(weights, f"{prefix}.mlp.gate.bias", f"{prefix}.mlp.expert_bias")
             _rename(
                 weights,

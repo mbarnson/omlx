@@ -1,0 +1,59 @@
+{
+  "0.9B": {
+    "revision": "ee770e713760cf6350e4322cdbbff91a163b7d70",
+    "special_tokens": {
+      "<|ifm|im_start|>": 64018,
+      "<|ifm|im_end|>": 64019,
+      "<ifm|think>": 64029,
+      "</ifm|think>": 64030,
+      "<ifm|tools>": 64041,
+      "</ifm|tools>": 64042,
+      "<ifm|tool_call>": 64043,
+      "</ifm|tool_call>": 64044,
+      "<ifm|think_fast>": 64050,
+      "</ifm|think_fast>": 64051,
+      "<ifm|think_faster>": 64052,
+      "</ifm|think_faster>": 64053,
+      "<ifm|tool_calls>": 64054,
+      "</ifm|tool_calls>": 64055,
+      "<ifm|arg_key>": 64056,
+      "</ifm|arg_key>": 64057,
+      "<ifm|arg_type>": 64058,
+      "</ifm|arg_type>": 64059,
+      "<ifm|arg_value>": 64060,
+      "</ifm|arg_value>": 64061
+    },
+    "generation_eos": 1
+  },
+  "3.7B": {
+    "revision": "633f52ad28b17edeabd82afc61d2d13b4c59a561",
+    "special_tokens": {
+      "<|ifm|begin_of_text|>": 0,
+      "<|ifm|endoftext|>": 1,
+      "<|ifm|im_start|>": 250018,
+      "<|ifm|im_end|>": 250019,
+      "<ifm|think>": 250029,
+      "</ifm|think>": 250030,
+      "<ifm|tools>": 250041,
+      "</ifm|tools>": 250042,
+      "<ifm|tool_call>": 250043,
+      "</ifm|tool_call>": 250044,
+      "<ifm|think_fast>": 250050,
+      "</ifm|think_fast>": 250051,
+      "<ifm|think_faster>": 250052,
+      "</ifm|think_faster>": 250053,
+      "<ifm|tool_calls>": 250054,
+      "</ifm|tool_calls>": 250055,
+      "<ifm|arg_key>": 250056,
+      "</ifm|arg_key>": 250057,
+      "<ifm|arg_type>": 250058,
+      "</ifm|arg_type>": 250059,
+      "<ifm|arg_value>": 250060,
+      "</ifm|arg_value>": 250061
+    },
+    "generation_eos": [
+      1,
+      250019
+    ]
+  }
+}

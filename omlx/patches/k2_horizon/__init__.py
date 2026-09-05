@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Register K2 Horizon MoVA model and tool protocol support for pinned mlx-lm."""
+"""Register K2 Horizon model, checkpoint, and tool protocol support."""
 
 from __future__ import annotations
 
@@ -70,6 +70,10 @@ def apply_k2_horizon_patch() -> bool:
     parser_applied = _register_if_missing(
         _PARSER_MODULE, "tool_parser.py", "mlx_lm.tool_parsers"
     )
+
+    from .checkpoint import apply_checkpoint_patch
+
+    apply_checkpoint_patch()
 
     _APPLIED = True
     if model_applied or parser_applied:
