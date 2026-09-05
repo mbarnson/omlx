@@ -22,7 +22,7 @@ from ..memory_monitor import MemoryMonitor, set_model_info_from_model
 from ..patches.k2_horizon import apply_k2_horizon_patch
 from ..patches.k2_horizon.uno_adapter import load_uno_adapter
 from ..patches.k2_horizon.uno_decode import UnoDecoder
-from ..uno_bundle import resolve_uno_bundle
+from ..uno_bundle import UnoBundle, resolve_uno_bundle
 from ..utils.model_loading import lm_load_compat
 from ..utils.tokenizer import get_tokenizer_config
 from .base import ActivityTrackingMixin, BaseEngine, GenerationOutput
@@ -59,11 +59,7 @@ class _StopBuffer:
 
 
 class UnoEngine(ActivityTrackingMixin, BaseEngine):
-    """Own one base+adapter pair; serialize requests on the shared MLX executor.
-
-    No draft tokens leave the decoder. KV and sampling state are request-local;
-    there is no persistent prefix cache or alternate AR engine.
-    """
+    """Serve committed Uno tokens with request-local KV on the shared MLX executor."""
 
     is_uno_model = True
 
@@ -93,6 +89,27 @@ class UnoEngine(ActivityTrackingMixin, BaseEngine):
     def model_type(self):
         return "k2_horizon"
 
+    def _load_model(self, bundle: UnoBundle):
+        """Load the base and conditional adapter on the MLX executor."""
+        apply_k2_horizon_patch()
+        model, tokenizer = lm_load_compat(
+            str(bundle.base_path),
+            trust_remote_code=False,
+            tokenizer_config=get_tokenizer_config(str(bundle.base_path)),
+        )
+        info = load_uno_adapter(
+            model, bundle.adapter_path, base_model_id=bundle.base_model_id
+        )
+        mx.eval(model.parameters())
+        monitor = MemoryMonitor(max_kv_cache_memory=None, eviction_enabled=False)
+        set_model_info_from_model(monitor, model)
+        guard = SerialPrefillGuard(monitor, self._prefill_step)
+        guard.record_mlx_active_memory(mx.get_active_memory())
+        factory = detect_output_parser(str(bundle.base_path), tokenizer, bundle.config)
+        if factory is None or factory.kind != "k2_horizon":
+            raise ValueError("Uno requires the K2 Horizon output parser and tokenizer")
+        return model, tokenizer, copy.deepcopy(tokenizer), info, guard, factory
+
     async def start(self):
         async with self._lock:
             if self._model is not None:
@@ -110,34 +127,8 @@ class UnoEngine(ActivityTrackingMixin, BaseEngine):
                     raise ValueError(f"Uno does not support {flag}")
             bundle = resolve_uno_bundle(self._model_name)
 
-            def load():
-                apply_k2_horizon_patch()
-                model, tokenizer = lm_load_compat(
-                    str(bundle.base_path),
-                    trust_remote_code=False,
-                    tokenizer_config=get_tokenizer_config(str(bundle.base_path)),
-                )
-                info = load_uno_adapter(
-                    model, bundle.adapter_path, base_model_id=bundle.base_model_id
-                )
-                mx.eval(model.parameters())
-                monitor = MemoryMonitor(
-                    max_kv_cache_memory=None, eviction_enabled=False
-                )
-                set_model_info_from_model(monitor, model)
-                guard = SerialPrefillGuard(monitor, self._prefill_step)
-                guard.record_mlx_active_memory(mx.get_active_memory())
-                factory = detect_output_parser(
-                    str(bundle.base_path), tokenizer, bundle.config
-                )
-                if factory is None or factory.kind != "k2_horizon":
-                    raise ValueError(
-                        "Uno requires the K2 Horizon output parser and tokenizer"
-                    )
-                return model, tokenizer, copy.deepcopy(tokenizer), info, guard, factory
-
             result = await asyncio.get_running_loop().run_in_executor(
-                get_mlx_executor(), load
+                get_mlx_executor(), self._load_model, bundle
             )
             (
                 self._model,

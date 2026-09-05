@@ -300,6 +300,10 @@ Models not listed above may still work if their chat template accepts `tools` an
 
 Point `--model-dir` at a directory containing MLX-format model subdirectories. Two-level organization folders (e.g., `mlx-community/model-name/`) are also supported.
 
+[IFM K2 Horizon and Uno](docs/k2-horizon.md) also support local Hugging Face
+cache snapshots. Uno loads its compatible base and conditional adapter together;
+the ordinary base remains separately selectable.
+
 ```
 ~/models/
 ├── Step-3.5-Flash-8bit/

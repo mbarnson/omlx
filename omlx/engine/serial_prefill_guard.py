@@ -6,16 +6,9 @@ from ..utils.proc_memory import get_phys_footprint
 
 
 class SerialPrefillGuard:
-    """Prefill-memory guard target for a serial generation path,
-    which bypasses the Scheduler entirely.
+    """Apply scheduler memory limits to serial Uno and DFlash prefill.
 
-    Holds a ``MemoryMonitor`` (built from the target model's dims) plus the two
-    watermark attrs the ``ProcessMemoryEnforcer`` writes on schedulers each tick
-    (``_prefill_memory_guard``, ``_memory_hard_limit_bytes``). The enforcer
-    resolves this object via ``_resolve_scheduler`` so DFlash receives the same
-    ceiling as scheduler-driven engines, and ``preflight_or_raise`` delegates to
-    the shared ``raise_if_prefill_exceeds`` so the estimate + HTTP-400 mapping
-    match ``Scheduler.preflight_or_raise`` exactly.
+    ProcessMemoryEnforcer updates the same watermarks used by Scheduler.
     """
 
     def __init__(self, memory_monitor: MemoryMonitor, prefill_step_size: int):

@@ -110,6 +110,49 @@ def test_missing_base_is_actionable_and_never_downloads(cache, caplog):
         resolve_uno_bundle(adapter)
 
 
+def test_relative_registration_pairs_base_and_adapter(cache):
+    root, base, adapter = cache
+    entry = root / "registered-uno"
+    entry.mkdir()
+    descriptor = {
+        "format": "k2_uno",
+        "version": 1,
+        "base_model_id": "IFM/K2-Horizon-0.9B",
+        "base_path": "../" + str(base.relative_to(root)),
+        "adapter_path": "../" + str(adapter.relative_to(root)),
+    }
+    (entry / "uno_config.json").write_text(json.dumps(descriptor))
+    bundle = resolve_uno_bundle(entry)
+    assert bundle.base_path == base and bundle.adapter_path == adapter
+    assert bundle.block_size == 8
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        ({"version": True}, "version=1"),
+        ({"base_model_id": []}, "No released K2 Uno adapter"),
+        ({"base_model_id": "IFM/K2-Horizon-7B"}, "base identity"),
+        ({"backend": "ane"}, "Unknown Uno registration fields"),
+    ],
+)
+def test_invalid_registration_rejected_before_loading(cache, override, message):
+    root, base, adapter = cache
+    entry = root / "registered-uno"
+    entry.mkdir()
+    descriptor = {
+        "format": "k2_uno",
+        "version": 1,
+        "base_model_id": "IFM/K2-Horizon-0.9B",
+        "base_path": str(base),
+        "adapter_path": str(adapter),
+    }
+    descriptor.update(override)
+    (entry / "uno_config.json").write_text(json.dumps(descriptor))
+    with pytest.raises(ValueError, match=message):
+        resolve_uno_bundle(entry)
+
+
 def test_unrelated_peft_stays_unsupported(tmp_path):
     adapter = tmp_path / "ordinary-lora"
     adapter.mkdir()

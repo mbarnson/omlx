@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Local-only resolution of a K2 Uno base and its conditional adapter.
-
-PEFT's CAUSAL_LM metadata is insufficient to select a diffusion decoder.
-Recognize official cache identities, or an explicit local uno_config.json.
-This module intentionally does not import MLX or fetch Hub files.
-"""
+"""Resolve released Uno adapters and their local bases without importing MLX."""
 
 from __future__ import annotations
 
@@ -59,58 +54,69 @@ class UnoBundle:
     config: dict
 
 
+def _read_registration(path: Path) -> tuple[str, Path, Path, int]:
+    """Read an explicit pair; resolve relative paths from its directory."""
+    descriptor = _read_object(path / "uno_config.json")
+    allowed = {
+        "format",
+        "version",
+        "base_model_id",
+        "base_path",
+        "adapter_path",
+        "block_size",
+    }
+    unknown = set(descriptor) - allowed
+    if unknown:
+        raise ValueError(f"Unknown Uno registration fields: {sorted(unknown)}")
+    if (
+        descriptor.get("format") != "k2_uno"
+        or type(descriptor.get("version")) is not int
+        or descriptor["version"] != 1
+    ):
+        raise ValueError("Uno registration requires format=k2_uno and version=1")
+    base_id = descriptor.get("base_model_id")
+    if not isinstance(base_id, str) or base_id not in RELEASED_BASES:
+        raise ValueError(f"No released K2 Uno adapter for {base_id}")
+    paths = []
+    for name in ("base_path", "adapter_path"):
+        value = descriptor.get(name)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"Uno registration requires {name}")
+        paths.append((path / Path(value).expanduser()).resolve())
+    return base_id, paths[0], paths[1], descriptor.get("block_size", 8)
+
+
+def _resolve_cached_adapter(
+    path: Path, source_repo_id: str | None
+) -> tuple[str, Path, Path, int]:
+    """Pair an official adapter snapshot with its pinned base in the same cache."""
+    identity = _cache_identity(path)
+    repo = source_repo_id or (identity[0] if identity else None)
+    if repo not in RELEASED_ADAPTERS or not identity or identity[0] != repo:
+        raise ValueError(
+            "Uno requires an official HF cache snapshot or uno_config.json"
+        )
+    base_id = RELEASED_ADAPTERS[repo]
+    base_path = (
+        path.parents[2]
+        / ("models--" + base_id.replace("/", "--"))
+        / "snapshots"
+        / RELEASED_BASES[base_id]
+    )
+    return base_id, base_path, path, 8
+
+
 def resolve_uno_bundle(
     path: str | Path, *, source_repo_id: str | None = None
 ) -> UnoBundle:
-    """Resolve only existing files; missing dependencies are actionable errors.
-
-    Local registrations contain {format: "k2_uno", version: 1,
-    base_model_id, base_path, adapter_path, block_size: 8}. Relative paths
-    are relative to the registration directory. Official cache adapters use
-    the pinned released base revision in the same Hub cache.
-    """
+    """Validate a local base/adapter pair and report its serving limits and size."""
     path = Path(path).expanduser().resolve()
-    descriptor_path = path / "uno_config.json"
-    if descriptor_path.is_file():
-        descriptor = _read_object(descriptor_path)
-        allowed = {
-            "format",
-            "version",
-            "base_model_id",
-            "base_path",
-            "adapter_path",
-            "block_size",
-        }
-        if set(descriptor) - allowed:
-            raise ValueError(
-                f"Unknown Uno registration fields: {set(descriptor) - allowed}"
-            )
-        if descriptor.get("format") != "k2_uno" or descriptor.get("version") != 1:
-            raise ValueError("Uno registration requires format=k2_uno and version=1")
-        base_id = descriptor.get("base_model_id")
-        paths = []
-        for name in ("base_path", "adapter_path"):
-            value = descriptor.get(name)
-            if not isinstance(value, str) or not value:
-                raise ValueError(f"Uno registration requires {name}")
-            paths.append((path / Path(value).expanduser()).resolve())
-        base_path, adapter_path = paths
-        block_size = descriptor.get("block_size", 8)
+    if (path / "uno_config.json").is_file():
+        base_id, base_path, adapter_path, block_size = _read_registration(path)
     else:
-        identity = _cache_identity(path)
-        repo = source_repo_id or (identity[0] if identity else None)
-        if repo not in RELEASED_ADAPTERS or not identity or identity[0] != repo:
-            raise ValueError(
-                "Uno requires an official HF cache snapshot or uno_config.json"
-            )
-        base_id = RELEASED_ADAPTERS[repo]
-        base_path = (
-            path.parents[2]
-            / ("models--" + base_id.replace("/", "--"))
-            / "snapshots"
-            / RELEASED_BASES[base_id]
+        base_id, base_path, adapter_path, block_size = _resolve_cached_adapter(
+            path, source_repo_id
         )
-        adapter_path, block_size = path, 8
     if base_id not in RELEASED_BASES:
         raise ValueError(f"No released K2 Uno adapter for {base_id}")
     if type(block_size) is not int or not 1 <= block_size <= 64:
@@ -150,13 +156,14 @@ def resolve_uno_bundle(
     if adapter_identity and RELEASED_ADAPTERS.get(adapter_identity[0]) != base_id:
         raise ValueError("Uno registered adapter identity does not match its base")
     return UnoBundle(
-        base_path,
-        adapter_path,
-        base_id,
-        identity[1] if identity else None,
-        adapter_identity[1] if adapter_identity else None,
-        sum(shard.stat().st_size for shard in shards) + adapter_weights.stat().st_size,
-        context,
-        block_size,
-        config,
+        base_path=base_path,
+        adapter_path=adapter_path,
+        base_model_id=base_id,
+        base_revision=identity[1] if identity else None,
+        adapter_revision=adapter_identity[1] if adapter_identity else None,
+        estimated_size=sum(shard.stat().st_size for shard in shards)
+        + adapter_weights.stat().st_size,
+        context_length=context,
+        block_size=block_size,
+        config=config,
     )

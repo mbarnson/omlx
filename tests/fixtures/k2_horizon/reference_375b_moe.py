@@ -5,8 +5,9 @@
 # Imports only; this fixture does not download or construct a full checkpoint.
 import torch
 from torch import nn
-from torch.nn import functional as F
+from torch.nn import functional as F  # noqa: N812
 from transformers.activations import ACT2FN
+
 
 class K2HorizonMLP(nn.Module):
     def __init__(self, config, intermediate_size=None):
