@@ -1,14 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""K2 Horizon MoVA support for the pinned mlx-lm dependency.
-
-Registers ``mlx_lm.models.k2_horizon`` and ``mlx_lm.tool_parsers.k2_horizon``
-under mlx-lm's namespace while upstream lacks them. The model module is an
-original inference-only implementation of ``IFM/K2-Horizon-MoVA-36B-A4B``; the
-parser follows the IFM tool protocol from the checkpoint's chat template.
-
-Each registration is independent: upstream may ship the protocol parser before
-the MoVA architecture, and finding one must not suppress the other.
-"""
+"""Register K2 Horizon MoVA model and tool protocol support for pinned mlx-lm."""
 
 from __future__ import annotations
 
@@ -19,9 +10,6 @@ import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-CHECKPOINT_REVISION = "05cab0a4d7150c1c460a000b37ff40cc1af2feaa"
-CHECKPOINT_URL = "https://huggingface.co/IFM/K2-Horizon-MoVA-36B-A4B"
 
 _MODEL_MODULE = "mlx_lm.models.k2_horizon"
 _PARSER_MODULE = "mlx_lm.tool_parsers.k2_horizon"
@@ -101,8 +89,6 @@ def is_applied() -> bool:
 
 
 __all__ = [
-    "CHECKPOINT_REVISION",
-    "CHECKPOINT_URL",
     "apply_k2_horizon_patch",
     "is_applied",
 ]

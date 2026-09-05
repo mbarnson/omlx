@@ -1700,6 +1700,42 @@ class TestK2HorizonOutputParserSession:
             "Rome",
         ]
 
+    @pytest.mark.parametrize(
+        ("body", "error", "match"),
+        [
+            (
+                '<ifm|tool_call>{"name":"weather","arguments":</ifm|tool_call>',
+                json.JSONDecodeError,
+                None,
+            ),
+            (
+                '<ifm|tool_call>{"name":"weather","arguments":[]}</ifm|tool_call>',
+                ValueError,
+                "arguments must be an object",
+            ),
+        ],
+    )
+    def test_malformed_json_calls_raise(self, body, error, match):
+        from omlx.patches.k2_horizon.tool_parser import parse_tool_call
+
+        with pytest.raises(error, match=match):
+            parse_tool_call(body, _K2_WEATHER_TOOL)
+
+    def test_duplicate_xml_keys_keep_the_last_value_without_arg_type(self):
+        from omlx.patches.k2_horizon.tool_parser import parse_tool_call
+
+        calls = parse_tool_call(
+            "<ifm|tool_call>weather"
+            "<ifm|arg_key>city</ifm|arg_key>"
+            "<ifm|arg_value>Paris</ifm|arg_value>"
+            "<ifm|arg_key>city</ifm|arg_key>"
+            "<ifm|arg_value>Rome</ifm|arg_value>"
+            "</ifm|tool_call>",
+            _K2_WEATHER_TOOL,
+        )
+
+        assert calls == [{"name": "weather", "arguments": {"city": "Rome"}}]
+
     def test_unregistered_tool_names_are_dropped_at_finalize(self):
         tokenizer = K2HorizonTokenizer(
             {

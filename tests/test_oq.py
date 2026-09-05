@@ -7243,3 +7243,36 @@ class TestK2HorizonProtection:
             4,
         )
         assert result is True
+
+    @pytest.mark.skipif(not HAS_MLX, reason="MLX not available")
+    def test_lm_head_imatrix_capture_normalizes_collapsed_hidden(self):
+        from types import SimpleNamespace
+
+        from omlx.oq import _collect_k2_horizon_lm_head_imatrix
+
+        module = object()
+        norm = MagicMock(side_effect=lambda hidden: hidden + 1)
+
+        class Collector:
+            def __init__(self):
+                self._original_modules = {"lm_head": module}
+                self.entries = {}
+                self.captured = None
+
+            def collect_dense(self, name, found_module, hidden):
+                assert found_module is module
+                self.captured = hidden
+                self.entries[name] = object()
+
+        collector = Collector()
+        model = SimpleNamespace(
+            model_type="k2_horizon",
+            model=SimpleNamespace(norm=norm),
+        )
+
+        assert _collect_k2_horizon_lm_head_imatrix(
+            model, mx.ones((1, 2, 3, 4)), collector
+        )
+        assert collector.captured.shape == (1, 2, 4)
+        assert mx.allclose(collector.captured, mx.full((1, 2, 4), 2.0))
+        norm.assert_called_once()

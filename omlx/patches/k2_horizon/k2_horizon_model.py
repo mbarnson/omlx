@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""K2 Horizon MoVA text model for the pinned mlx-lm dependency.
-
-Implements the semantics of ``IFM/K2-Horizon-MoVA-36B-A4B`` only: a dense
-prefix followed by layers whose value projection is a routed mixture of value
-experts (MoVA) and whose FFN is a sigmoid top-k mixture of SwiGLU experts plus
-one shared expert. Both routers reproduce the source xLLM two-part BF16 GEMM.
-"""
+"""Implement the K2 Horizon MoVA architecture validated against the 36B-A4B checkpoint."""
 
 from __future__ import annotations
 

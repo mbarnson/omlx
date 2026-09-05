@@ -1,18 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Local PyTorch oracle for the K2 Horizon MoVA port.
-
-Runs the checkpoint's own ``modeling_k2_horizon.py`` on the MPS backend with
-both router GEMMs replaced by the source xLLM two-part BF16 contract, then
-writes per-layer reference arrays for the oMLX parity test. Never run this
-while an MLX copy of the model is resident; both wire Metal memory.
-
-Modes::
-
-    capture  --snapshot DIR --out DIR [--layers 0,3,24,47] [--tokens N]
-    greedy   --snapshot DIR --out DIR [--steps N]
-    replay   --snapshot DIR --out DIR   (needs DIR/mlx_router_inputs.npz)
-    compare  --snapshot DIR --out DIR --other DIR2   (two capture dirs)
-"""
+"""Generate local PyTorch references for K2 Horizon MoVA parity checks."""
 
 from __future__ import annotations
 
@@ -385,7 +372,7 @@ def cmd_replay(args) -> None:
 
 
 def cmd_compare(args) -> None:
-    """Report per-tensor differences between two capture files, e.g. CPU vs MPS."""
+    """Report per-tensor differences between two capture files such as CPU and MPS."""
     left = np.load(args.out / "oracle_capture.npz")
     right = np.load(args.other / "oracle_capture.npz")
     report = {}

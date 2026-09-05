@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the K2 Horizon MoVA mlx-lm compatibility patch.
-
-Gate A covers registration and config validation, Gate B covers component
-numerics against straightforward references, and Gate C covers a tiny
-synthetic model end to end through mlx-lm's batch generator.
-"""
+"""Validate K2 Horizon registration, numerics, cache behavior, and generation."""
 
 from __future__ import annotations
 

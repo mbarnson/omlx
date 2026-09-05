@@ -6218,7 +6218,7 @@ class Scheduler:
     def _thinking_marker_candidates(
         self,
     ) -> list[tuple[list[int], list[int] | None]]:
-        """Return ``(start_ids, end_ids)`` pairs a prompt may end with, where a ``None`` end defers to ``_resolve_think_end_token_ids``."""
+        """Return prompt-tail thinking marker pairs as token IDs."""
         factory = getattr(self, "_output_parser_factory", None)
         pairs = getattr(factory, "thinking_marker_pairs", ()) if factory else ()
         candidates = []
@@ -6237,13 +6237,7 @@ class Scheduler:
         return [(start_ids, None)] if start_ids else []
 
     def _detect_needs_think_prefix(self, request: "Request") -> bool:
-        """Detect if prompt ends with an open <think> tag (thinking enabled).
-
-        Returns False for disabled-thinking patterns like <think></think>
-        where </think> immediately follows <think> in the prompt tail.
-        Records the matched close token on the request when the parser
-        offers several marker pairs.
-        """
+        """Detect a prompt-tail thinking opener and bind its matching close token."""
         if not request.prompt_token_ids:
             return False
 

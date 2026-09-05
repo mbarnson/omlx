@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""IFM K2 Horizon tool-call parser under the ``mlx_lm.tool_parsers`` contract.
-
-One ``<ifm|tool_calls>`` group holds one or more ``<ifm|tool_call>`` elements.
-Each element is either a JSON ``{"name", "arguments"}`` object or a function
-name followed by ``<ifm|arg_key>``/``<ifm|arg_value>`` pairs, optionally with
-``<ifm|arg_type>`` between them.
-"""
+"""Parse IFM K2 Horizon XML and JSON tool-call envelopes for mlx-lm."""
 
 from __future__ import annotations
 
@@ -69,8 +63,10 @@ def parse_tool_call(text: str, tools: list[Any] | None = None) -> list[dict[str,
     if not bodies:
         raise ValueError("K2 Horizon tool group contains no complete <ifm|tool_call>")
     return [
-        _parse_json_call(body, tools)
-        if body.startswith("{")
-        else _parse_xml_call(body, tools)
+        (
+            _parse_json_call(body, tools)
+            if body.startswith("{")
+            else _parse_xml_call(body, tools)
+        )
         for body in bodies
     ]

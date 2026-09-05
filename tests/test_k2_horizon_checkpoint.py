@@ -1,13 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Real-checkpoint tests for K2-Horizon-MoVA-36B-A4B (Gate E).
-
-Every test needs ``OMLX_K2_HORIZON_SNAPSHOT`` pointing at the unmodified
-Hugging Face snapshot. Tokenizer and template tests are quick; the full-load
-and oracle-parity tests are marked slow and additionally need
-``OMLX_K2_HORIZON_FULL=1`` or ``OMLX_K2_HORIZON_ORACLE_DIR`` because they
-hold the 75 GB BF16 model. Generate oracle arrays with
-``tools/k2_horizon_oracle.py`` in a separate process first.
-"""
+"""Validate K2-Horizon-MoVA-36B-A4B against an explicitly selected checkpoint."""
 
 from __future__ import annotations
 
