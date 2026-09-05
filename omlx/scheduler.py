@@ -5916,7 +5916,11 @@ class Scheduler:
                 or self._get_output_parser_thinking_end_text() is not None
             )
         ):
-            think_end_ids = self._resolve_think_end_token_ids()
+            request_think_end_id = getattr(request, "think_end_token_id", None)
+            if request_think_end_id is not None:
+                think_end_ids = [request_think_end_id]
+            else:
+                think_end_ids = self._resolve_think_end_token_ids()
             if think_end_ids:
                 from .api.thinking import ThinkingBudgetProcessor
 
@@ -6199,58 +6203,81 @@ class Scheduler:
 
         return None
 
+    def _marker_token_ids(self, text: str) -> list[int] | None:
+        """Resolve a marker string to token IDs, preferring one vocabulary token."""
+        try:
+            token_id = self.tokenizer.convert_tokens_to_ids(text)
+            if isinstance(token_id, int) and token_id != getattr(
+                self.tokenizer, "unk_token_id", None
+            ):
+                return [token_id]
+        except (AttributeError, KeyError, TypeError):
+            pass
+        return self._encode_thinking_marker(text)
+
+    def _thinking_marker_candidates(
+        self,
+    ) -> list[tuple[list[int], list[int] | None]]:
+        """Return ``(start_ids, end_ids)`` pairs a prompt may end with, where a ``None`` end defers to ``_resolve_think_end_token_ids``."""
+        factory = getattr(self, "_output_parser_factory", None)
+        pairs = getattr(factory, "thinking_marker_pairs", ()) if factory else ()
+        candidates = []
+        for start_text, end_text in pairs:
+            start_ids = self._marker_token_ids(start_text)
+            if start_ids:
+                candidates.append((start_ids, self._marker_token_ids(end_text)))
+        if candidates:
+            return candidates
+
+        think_start_id = self._get_think_token_id("think_start_id")
+        if think_start_id is not None:
+            return [([think_start_id], None)]
+        think_start_text = self._get_output_parser_thinking_start_text() or "<think>"
+        start_ids = self._marker_token_ids(think_start_text)
+        return [(start_ids, None)] if start_ids else []
+
     def _detect_needs_think_prefix(self, request: "Request") -> bool:
         """Detect if prompt ends with an open <think> tag (thinking enabled).
 
         Returns False for disabled-thinking patterns like <think></think>
         where </think> immediately follows <think> in the prompt tail.
+        Records the matched close token on the request when the parser
+        offers several marker pairs.
         """
-        think_start_ids = None
-        think_start_id = self._get_think_token_id("think_start_id")
-        if think_start_id is not None:
-            think_start_ids = [think_start_id]
-        else:
-            think_start_text = (
-                self._get_output_parser_thinking_start_text() or "<think>"
-            )
-            try:
-                token_id = self.tokenizer.convert_tokens_to_ids(think_start_text)
-                if isinstance(token_id, int) and token_id != getattr(
-                    self.tokenizer, "unk_token_id", None
-                ):
-                    think_start_ids = [token_id]
-            except (AttributeError, KeyError, TypeError):
-                think_start_ids = None
-
-            if think_start_ids is None:
-                think_start_ids = self._encode_thinking_marker(think_start_text)
-
-        if not think_start_ids or not request.prompt_token_ids:
+        if not request.prompt_token_ids:
             return False
 
-        lookback = max(3, len(think_start_ids) + 2)
-        last_tokens = list(request.prompt_token_ids[-lookback:])
-        last_idx = None
-        for idx in range(len(last_tokens) - len(think_start_ids), -1, -1):
-            if last_tokens[idx : idx + len(think_start_ids)] == think_start_ids:
-                last_idx = idx
-                break
-        if last_idx is None:
-            return False
+        for think_start_ids, pair_end_ids in self._thinking_marker_candidates():
+            lookback = max(3, len(think_start_ids) + 2)
+            last_tokens = list(request.prompt_token_ids[-lookback:])
+            last_idx = None
+            for idx in range(len(last_tokens) - len(think_start_ids), -1, -1):
+                if last_tokens[idx : idx + len(think_start_ids)] == think_start_ids:
+                    last_idx = idx
+                    break
+            if last_idx is None:
+                continue
 
-        # <think> found. Check if </think> follows it (disabled thinking pattern).
-        after_start = last_tokens[last_idx + len(think_start_ids) :]
+            # <think> found. Check if </think> follows it (disabled thinking pattern).
+            after_start = last_tokens[last_idx + len(think_start_ids) :]
+            if after_start:
+                think_end_ids = (
+                    pair_end_ids
+                    if pair_end_ids is not None
+                    else self._resolve_think_end_token_ids()
+                )
+                if think_end_ids and len(after_start) >= len(think_end_ids):
+                    for idx in range(len(after_start) - len(think_end_ids) + 1):
+                        if after_start[idx : idx + len(think_end_ids)] == think_end_ids:
+                            return False
+                elif think_end_ids and think_end_ids[0] in after_start:
+                    return False
 
-        if after_start:
-            think_end_ids = self._resolve_think_end_token_ids()
-            if think_end_ids and len(after_start) >= len(think_end_ids):
-                for idx in range(len(after_start) - len(think_end_ids) + 1):
-                    if after_start[idx : idx + len(think_end_ids)] == think_end_ids:
-                        return False
-            elif think_end_ids and think_end_ids[0] in after_start:
-                return False
+            if pair_end_ids is not None and len(pair_end_ids) == 1:
+                request.think_end_token_id = pair_end_ids[0]
+            return True
 
-        return True
+        return False
 
     def _ensure_batch_generator(self, sampling_params: SamplingParams) -> None:
         """Ensure BatchGenerator exists with compatible settings."""

@@ -8,6 +8,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+
 from omlx.adapter.gemma4 import Gemma4OutputParserSession
 from omlx.adapter.harmony import load_harmony_gpt_oss_encoding
 from omlx.adapter.output_parser import detect_output_parser
@@ -211,8 +213,7 @@ class TestBailingHybridOutputParserSession:
         assert factory.kind == "bailing_hybrid"
         session = factory.create_session(tokenizer)
         results = [
-            session.process_token(token_id)
-            for token_id in (1, 157152, 2, 157151)
+            session.process_token(token_id) for token_id in (1, 157152, 2, 157151)
         ]
         final = session.finalize()
 
@@ -336,6 +337,7 @@ class TestBailingHybridOutputParserSession:
 
         assert final.tool_calls == []
         assert final.finish_reason is None
+
 
 class TestCohere2MoeOutputParserSession:
     def test_detects_cohere2_moe_from_model_config(self, monkeypatch):
@@ -1326,7 +1328,7 @@ class TestMuseGlimmerOutputParserSession:
             2: "<|message|>",
             3: (
                 '<atem:function_calls>\n<atem:invoke name="bash">\n'
-                "<atem:parameter name=\"command\">ls -la /tmp/reports"
+                '<atem:parameter name="command">ls -la /tmp/reports'
                 "</atem:parameter>\n</atem:invoke>\n</atem:function_calls>"
             ),
             4: "<|eot|>",
@@ -1539,3 +1541,200 @@ class TestMuseGlimmerOutputParserSession:
             {"model_type": "llama"},
         )
         assert factory is None
+
+
+class K2HorizonTokenizer(CohereTokenizer):
+    """Fake tokenizer exposing K2 Horizon's single-token IFM markers."""
+
+    has_tool_calling = True
+    tool_call_start = "<ifm|tool_calls>"
+    tool_call_end = "</ifm|tool_calls>"
+    unk_token_id = -1
+    _marker_ids = {
+        "<ifm|think>": 250029,
+        "</ifm|think>": 250030,
+        "<ifm|think_fast>": 250050,
+        "</ifm|think_fast>": 250051,
+        "<ifm|think_faster>": 250052,
+        "</ifm|think_faster>": 250053,
+        "<ifm|tool_calls>": 250054,
+        "</ifm|tool_calls>": 250055,
+    }
+
+    def __init__(self, token_map: dict[int, str]):
+        super().__init__({**{v: k for k, v in self._marker_ids.items()}, **token_map})
+
+    def convert_tokens_to_ids(self, token: str) -> int:
+        return self._marker_ids.get(token, -1)
+
+    def encode(self, text: str, add_special_tokens: bool = False):
+        token_id = self._marker_ids.get(text)
+        return [token_id] if token_id is not None else [7, 8]
+
+    def tool_parser(self, text: str, tools=None):
+        from omlx.patches.k2_horizon.tool_parser import parse_tool_call
+
+        return parse_tool_call(text, tools)
+
+
+_K2_WEATHER_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}, "days": {"type": "integer"}},
+            },
+        },
+    }
+]
+
+
+def _k2_factory(tokenizer):
+    factory = detect_output_parser(
+        "K2-Horizon-MoVA-36B-A4B", tokenizer, {"model_type": "k2_horizon"}
+    )
+    assert factory is not None
+    return factory
+
+
+def _k2_run(session, token_ids):
+    results = [session.process_token(token_id) for token_id in token_ids]
+    final = session.finalize()
+    stream = "".join(r.stream_text for r in results) + final.stream_text
+    visible = "".join(r.visible_text for r in results) + final.visible_text
+    return results, final, stream, visible
+
+
+class TestK2HorizonOutputParserSession:
+    def test_factory_declares_all_three_marker_pairs(self):
+        factory = _k2_factory(K2HorizonTokenizer({}))
+
+        assert factory.kind == "k2_horizon"
+        assert factory.thinking_start_text == "<ifm|think>"
+        assert factory.thinking_end_text == "</ifm|think>"
+        assert factory.thinking_start_output_text == "<think>\n"
+        assert factory.thinking_marker_pairs == (
+            ("<ifm|think>", "</ifm|think>"),
+            ("<ifm|think_fast>", "</ifm|think_fast>"),
+            ("<ifm|think_faster>", "</ifm|think_faster>"),
+        )
+        assert set(K2HorizonTokenizer._marker_ids) <= set(factory.protocol_marker_texts)
+
+    def test_missing_marker_token_is_an_error(self):
+        class Incomplete(K2HorizonTokenizer):
+            _marker_ids = {
+                k: v
+                for k, v in K2HorizonTokenizer._marker_ids.items()
+                if "fast" not in k
+            }
+
+        with pytest.raises(ValueError, match="think_fast"):
+            _k2_factory(Incomplete({}))
+
+    @pytest.mark.parametrize("close_id", [250030, 250051, 250053])
+    def test_prefilled_reasoning_closes_on_any_effort_marker(self, close_id):
+        tokenizer = K2HorizonTokenizer({1: "Let me think.", 2: "Answer."})
+        session = _k2_factory(tokenizer).create_session(tokenizer)
+        session.notify_prefilled_thought()
+
+        results, final, stream, visible = _k2_run(session, [1, close_id, 2])
+
+        assert stream == "Let me think.</think>Answer."
+        assert visible == stream
+        assert all(r.record_token for r in results)
+        assert final.tool_calls == []
+        assert final.finish_reason is None
+
+    def test_generated_opener_is_normalized_and_stray_closer_dropped(self):
+        tokenizer = K2HorizonTokenizer({1: "plan", 2: "reply"})
+        session = _k2_factory(tokenizer).create_session(tokenizer)
+
+        _, _, stream, _ = _k2_run(session, [250052, 1, 250053, 2, 250030])
+
+        assert stream == "<think>\nplan</think>reply"
+
+    def test_tool_group_closes_reasoning_and_is_parsed(self):
+        tokenizer = K2HorizonTokenizer(
+            {
+                1: "I should call a tool.",
+                2: "\n<ifm|tool_call>weather\n<ifm|arg_key>city</ifm|arg_key>\n"
+                "<ifm|arg_value>Paris</ifm|arg_value>\n<ifm|arg_key>days</ifm|arg_key>\n"
+                "<ifm|arg_value>3</ifm|arg_value>\n</ifm|tool_call>\n",
+            }
+        )
+        factory = _k2_factory(tokenizer)
+        session = factory.create_session_with_tools(tokenizer, _K2_WEATHER_TOOL)
+        session.notify_prefilled_thought()
+
+        _, final, stream, visible = _k2_run(session, [1, 250054, 2, 250055])
+
+        assert stream == "I should call a tool.</think>"
+        assert visible == stream
+        assert final.finish_reason == "tool_calls"
+        assert [c["name"] for c in final.tool_calls] == ["weather"]
+        assert json.loads(final.tool_calls[0]["arguments"]) == {
+            "city": "Paris",
+            "days": 3,
+        }
+
+    def test_json_and_parallel_calls_are_parsed(self):
+        tokenizer = K2HorizonTokenizer(
+            {
+                1: '\n<ifm|tool_call>{"name": "weather", "arguments": {"city": "Oslo"}}'
+                "</ifm|tool_call>\n<ifm|tool_call>weather\n<ifm|arg_key>city</ifm|arg_key>\n"
+                "<ifm|arg_type>string</ifm|arg_type>\n<ifm|arg_value>Rome</ifm|arg_value>\n"
+                "</ifm|tool_call>\n",
+            }
+        )
+        factory = _k2_factory(tokenizer)
+        session = factory.create_session_with_tools(tokenizer, _K2_WEATHER_TOOL)
+        session.notify_prefilled_thought()
+
+        _, final, stream, _ = _k2_run(session, [250030, 250054, 1, 250055])
+
+        assert stream == "</think>"
+        assert [json.loads(c["arguments"])["city"] for c in final.tool_calls] == [
+            "Oslo",
+            "Rome",
+        ]
+
+    def test_unregistered_tool_names_are_dropped_at_finalize(self):
+        tokenizer = K2HorizonTokenizer(
+            {
+                1: "\n<ifm|tool_call>launch\n<ifm|arg_key>x</ifm|arg_key><ifm|arg_value>1</ifm|arg_value></ifm|tool_call>\n"
+            }
+        )
+        factory = _k2_factory(tokenizer)
+        session = factory.create_session_with_tools(tokenizer, _K2_WEATHER_TOOL)
+
+        _, final, _, _ = _k2_run(session, [250054, 1, 250055])
+
+        assert final.tool_calls == []
+        assert final.finish_reason is None
+
+    def test_message_extractor_is_selected_for_k2_horizon(self):
+        from omlx.adapter.output_parser import detect_message_extractor
+        from omlx.api.utils import extract_k2_horizon_messages
+
+        extractor = detect_message_extractor(
+            "K2-Horizon-MoVA-36B-A4B", {"model_type": "k2_horizon"}
+        )
+
+        assert extractor is extract_k2_horizon_messages
+
+    def test_batched_engine_selects_extractor_from_mlx_lm_args(self):
+        """mlx-lm models expose ``args`` rather than ``config``; detection must still fire."""
+        from omlx.api.utils import extract_k2_horizon_messages
+        from omlx.engine.batched import BatchedEngine
+
+        engine = SimpleNamespace(
+            _model=SimpleNamespace(args=SimpleNamespace(model_type="k2_horizon")),
+            _model_name="K2-Horizon-MoVA-36B-A4B-BF16-MLX",
+        )
+        engine.model_type = BatchedEngine.model_type.fget(engine)
+
+        assert (
+            BatchedEngine.message_extractor.fget(engine) is extract_k2_horizon_messages
+        )

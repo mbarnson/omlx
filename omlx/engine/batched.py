@@ -151,6 +151,9 @@ class BatchedEngine(BaseEngine):
                     model_config = {"model_type": cfg.model_type}
                 elif isinstance(cfg, dict):
                     model_config = cfg
+            if model_config is None and (model_type := self.model_type) is not None:
+                # mlx-lm models expose ``args`` rather than ``config``.
+                model_config = {"model_type": model_type}
             return detect_message_extractor(self._model_name, model_config)
         except Exception:
             return None

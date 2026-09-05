@@ -1324,9 +1324,7 @@ class TestSchedulerAbortRequest:
 
         future = concurrent.futures.Future()
         scheduler._inflight_store_futures[request.request_id] = future
-        scheduler._pending_async_removes.append(
-            (123, request.request_id, future)
-        )
+        scheduler._pending_async_removes.append((123, request.request_id, future))
         snapshot_store = MagicMock()
         scheduler._boundary_snapshot_store = snapshot_store
         scheduler.block_aware_cache = MagicMock()
@@ -1839,9 +1837,7 @@ class TestSchedulerReset:
         future = executor.submit(blocked_store_worker)
         assert worker_started.wait(timeout=2)
         scheduler._inflight_store_futures[request.request_id] = future
-        scheduler._pending_async_removes.append(
-            (321, request.request_id, future)
-        )
+        scheduler._pending_async_removes.append((321, request.request_id, future))
 
         snapshot_store = MagicMock()
         snapshot_store.cleanup_request.side_effect = lambda _rid: order.append(
@@ -1962,9 +1958,7 @@ class TestSchedulerReset:
         )
         fake_executor.shutdown.assert_called_once_with(wait=False)
 
-    def test_shutdown_closes_boundary_snapshot_store(
-        self, mock_model, mock_tokenizer
-    ):
+    def test_shutdown_closes_boundary_snapshot_store(self, mock_model, mock_tokenizer):
         """shutdown() must stop the boundary snapshot writer thread.
 
         cleanup_all() only clears the store contents. If shutdown() is skipped,
@@ -2327,9 +2321,9 @@ class TestStoreCacheWorkerSync:
             sched_mod._safe_sync_stream()
 
         assert len(calls) == 1
-        assert (
-            calls[0] and calls[0][0] is sched_mod._default_generation_stream
-        ), f"Worker sync must target _default_generation_stream, got: {calls}"
+        assert calls[0] and calls[0][0] is sched_mod._default_generation_stream, (
+            f"Worker sync must target _default_generation_stream, got: {calls}"
+        )
 
     def test_safe_sync_swallows_no_stream_runtime_error(self):
         """A 'no Stream' RuntimeError from cross-thread sync must be
@@ -2639,9 +2633,7 @@ class TestSchedulerBoundarySnapshots:
     ):
         config = SchedulerConfig(paged_cache_block_size=4)
         scheduler = Scheduler(model=mock_model, tokenizer=mock_tokenizer, config=config)
-        scheduler._cache_probe_seqs.append(
-            ("stored-a", [1, 2, 3, 4, 5, 6, 7, 8])
-        )
+        scheduler._cache_probe_seqs.append(("stored-a", [1, 2, 3, 4, 5, 6, 7, 8]))
         request = Request(
             request_id="lookup-a",
             prompt="hello",
@@ -3443,9 +3435,7 @@ class TestSchedulerArraysCacheBlockAlignment:
         finally:
             scheduler.shutdown()
 
-    def test_non_qwen_arrays_cache_keeps_2048_block(
-        self, mock_tokenizer, tmp_path
-    ):
+    def test_non_qwen_arrays_cache_keeps_2048_block(self, mock_tokenizer, tmp_path):
         with patch("omlx.settings.get_system_memory", return_value=64 * 1024**3):
             scheduler = Scheduler(
                 model=self._hybrid_model(model_type="other_hybrid"),
@@ -4017,9 +4007,7 @@ class TestSpecPrefillCaches:
             assert scheduled == [request]
             assert request.prompt_cache is restored_cache
             assert request.prompt_cache is not old_cache
-            assert batch_generator.insert.call_args.kwargs["caches"] == [
-                restored_cache
-            ]
+            assert batch_generator.insert.call_args.kwargs["caches"] == [restored_cache]
         finally:
             scheduler.shutdown()
 
@@ -4071,9 +4059,7 @@ class TestSpecPrefillCaches:
         )
         scheduler._build_state_machine = MagicMock(return_value=MagicMock())
         scheduler._preflight_memory_check = MagicMock(return_value=None)
-        scheduler._do_external_prefill = MagicMock(
-            return_value=(fresh_cache, [4])
-        )
+        scheduler._do_external_prefill = MagicMock(return_value=(fresh_cache, [4]))
 
         try:
             with patch(
@@ -4092,9 +4078,7 @@ class TestSpecPrefillCaches:
             assert request.cached_tokens == 0
             assert request.remaining_tokens == [1, 2, 3, 4]
             assert request.specprefill_indices is None
-            assert batch_generator.insert.call_args.kwargs["caches"] == [
-                fresh_cache
-            ]
+            assert batch_generator.insert.call_args.kwargs["caches"] == [fresh_cache]
         finally:
             scheduler.shutdown()
 
@@ -4223,7 +4207,10 @@ class TestSpecPrefillCaches:
             assert target_manager._expected_layer_cache_types == target_types
             assert draft_manager._expected_model_name == "draft-model"
             assert draft_manager._expected_layer_cache_types == [
-                "ArraysCache", "ArraysCache", "ArraysCache", "KVCache"
+                "ArraysCache",
+                "ArraysCache",
+                "ArraysCache",
+                "KVCache",
             ]
             block_size = draft_cache.block_size
             arrays_state = (
@@ -4437,9 +4424,7 @@ class TestCacheCorruptionRecovery:
         scheduler.requests[request_id] = req
         return req
 
-    def test_corruption_reschedule_drains_prefilling(
-        self, mock_model, mock_tokenizer
-    ):
+    def test_corruption_reschedule_drains_prefilling(self, mock_model, mock_tokenizer):
         """Chunked prefills hold cache state and must be requeued (issue #2372)."""
         scheduler = self._make_scheduler(mock_model, mock_tokenizer)
         req = self._add_prefilling_request(scheduler)
@@ -6677,9 +6662,7 @@ class TestFailAllRequestsSnapshotCleanup:
 
     def _scheduler(self, mock_model, mock_tokenizer):
         config = SchedulerConfig(paged_cache_block_size=4)
-        return Scheduler(
-            model=mock_model, tokenizer=mock_tokenizer, config=config
-        )
+        return Scheduler(model=mock_model, tokenizer=mock_tokenizer, config=config)
 
     def test_fail_all_requests_drops_boundary_snapshots(
         self, mock_model, mock_tokenizer
@@ -6696,9 +6679,7 @@ class TestFailAllRequestsSnapshotCleanup:
         store = MagicMock()
         scheduler._boundary_snapshot_store = store
 
-        with patch.object(
-            scheduler, "_release_paged_cache_for_request"
-        ) as release:
+        with patch.object(scheduler, "_release_paged_cache_for_request") as release:
             failed = scheduler.fail_all_requests()
 
         assert failed == ["req-fail"]
@@ -6727,9 +6708,7 @@ class TestFailAllRequestsSnapshotCleanup:
         assert "req-storing" in scheduler._boundary_cache_snapshots
         store.cleanup_request.assert_not_called()
 
-    def test_drop_helper_tolerates_store_errors(
-        self, mock_model, mock_tokenizer
-    ):
+    def test_drop_helper_tolerates_store_errors(self, mock_model, mock_tokenizer):
         scheduler = self._scheduler(mock_model, mock_tokenizer)
         scheduler._boundary_cache_snapshots["req-x"] = {4: None}
         store = MagicMock()
@@ -6805,3 +6784,72 @@ class TestHybridDecodeKvEvalDefault:
             model=mock_model, tokenizer=mock_tokenizer, config=SchedulerConfig()
         )
         assert scheduler._decode_eval_kv_cache_interval == 0
+
+
+class TestDetectNeedsThinkPrefixMarkerPairs:
+    """Parsers offering several marker pairs bind the matched close token."""
+
+    _pairs = (
+        ("<ifm|think>", "</ifm|think>"),
+        ("<ifm|think_fast>", "</ifm|think_fast>"),
+        ("<ifm|think_faster>", "</ifm|think_faster>"),
+    )
+    _ids = {
+        "<ifm|think>": 250029,
+        "</ifm|think>": 250030,
+        "<ifm|think_fast>": 250050,
+        "</ifm|think_fast>": 250051,
+        "<ifm|think_faster>": 250052,
+        "</ifm|think_faster>": 250053,
+    }
+
+    def _make_scheduler(self, mock_model):
+        from conftest import MockTokenizer
+
+        from omlx.adapter.output_parser import OutputParserFactory
+
+        tokenizer = MockTokenizer()
+        tokenizer.convert_tokens_to_ids = lambda text: self._ids.get(text, 0)
+        tokenizer.unk_token_id = 0
+        scheduler = Scheduler(model=mock_model, tokenizer=tokenizer)
+        scheduler._output_parser_factory = OutputParserFactory(
+            kind="k2_horizon",
+            create_session=MagicMock(),
+            thinking_start_text="<ifm|think>",
+            thinking_end_text="</ifm|think>",
+            thinking_marker_pairs=self._pairs,
+        )
+        return scheduler
+
+    def _make_request(self, prompt_token_ids):
+        return Request(
+            request_id="test-think-pairs",
+            prompt="test",
+            sampling_params=SamplingParams(),
+            prompt_token_ids=list(prompt_token_ids),
+            num_prompt_tokens=len(prompt_token_ids),
+        )
+
+    @pytest.mark.parametrize(
+        ("start_id", "end_id"), [(250029, 250030), (250050, 250051), (250052, 250053)]
+    )
+    def test_matched_pair_binds_its_close_token(self, mock_model, start_id, end_id):
+        scheduler = self._make_scheduler(mock_model)
+        request = self._make_request([1, 2, 3, start_id, 198])
+
+        assert scheduler._detect_needs_think_prefix(request) is True
+        assert request.think_end_token_id == end_id
+
+    def test_closed_pair_in_prompt_tail_disables_thinking(self, mock_model):
+        scheduler = self._make_scheduler(mock_model)
+        request = self._make_request([1, 2, 250050, 250051])
+
+        assert scheduler._detect_needs_think_prefix(request) is False
+        assert request.think_end_token_id is None
+
+    def test_no_opener_leaves_request_untouched(self, mock_model):
+        scheduler = self._make_scheduler(mock_model)
+        request = self._make_request([1, 2, 3])
+
+        assert scheduler._detect_needs_think_prefix(request) is False
+        assert request.think_end_token_id is None
