@@ -1,29 +1,16 @@
 # K2 Horizon and Uno
 
-K2 Horizon supports dense and routed architectures. Real BF16 checkpoints for
-0.9B, 3.7B and MoVA-36B-A4B have passed load and generation checks. Dense 7B/32B,
-MoE 375B-A23B and 7B Uno have configuration or reduced-fixture coverage; their
-real checkpoints remain unverified.
+K2 Horizon models support diffusion-augmented "Uno":
+https://huggingface.co/papers/2609.04010
 
 ## Pair Uno with its base
 
 Uno is a conditional diffusion adapter. Selecting it loads the compatible IFM
 base and adapter into one dedicated engine. Draft passes apply the adapter to
-noisy rows; verification uses the unchanged base weights. Do not fuse the
-adapter permanently or load it through the ordinary mlx-lm LoRA loader.
+noisy rows; verification uses the unchanged base weights.
 
-Add your Hugging Face Hub cache (normally `~/.cache/huggingface/hub`) as an oMLX
-model directory. Complete local snapshots of both components are required:
-
-| Uno adapter | Required base | Automatic base revision |
-| --- | --- | --- |
-| IFM/K2-Horizon-0.9B-Uno | IFM/K2-Horizon-0.9B | `ee770e713760cf6350e4322cdbbff91a163b7d70` |
-| IFM/K2-Horizon-7B-Uno | IFM/K2-Horizon-7B | `586b03f0fd1fbbf2f13eeafc33749e95ae34dd10` |
-
-Discovery resolves the pair locally and never downloads weights. Missing bases
-or shards produce a diagnostic. Select `IFM--K2-Horizon-0.9B-Uno` in an API
-request to use the pair; select `IFM--K2-Horizon-0.9B` for ordinary autoregressive
-inference. The base needs no separate load request before using Uno.
+Select `IFM--K2-Horizon-0.9B-Uno` in an API request to use the pair; select 
+`IFM--K2-Horizon-0.9B` for ordinary autoregressive inference.
 
 ```json
 {
