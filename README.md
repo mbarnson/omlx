@@ -213,6 +213,13 @@ Load LLMs, VLMs, embedding models, and rerankers within the same server. Models 
 - **Per-model TTL**: Set an idle timeout per model to auto-unload after a period of inactivity.
 - **Process memory enforcement**: Total memory limit (default: system RAM - 8GB) prevents system-wide OOM.
 
+### IFM K2 Horizon
+
+K2 Horizon supports serving and oQ quantization. Select a compatible K2 base
+in the macOS app or web dashboard. Open its model settings. Enable **Uno**.
+Select a compatible local adapter. In the app, save and apply the model profile.
+In the dashboard, save the settings. Uno is off by default.
+
 ### Per-Model Settings
 
 Configure sampling parameters, chat template kwargs, TTL, model alias, model type override, and more per model directly from the admin panel. Changes apply immediately without server restart.

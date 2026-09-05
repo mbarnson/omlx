@@ -29,7 +29,6 @@ ModelType = Literal[
     "llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts"
 ]
 EngineType = Literal[
-    "uno",
     "batched",
     "vlm",
     "embedding",
@@ -1459,33 +1458,30 @@ def _is_hf_cache_mlx_compatible(model_dir: Path, source_repo_id: str) -> bool:
 def _register_uno(
     models, model_dir, model_id, *, source_type="local", source_repo_id=None
 ):
-    """Register only explicit Uno bundles with a complete local base dependency."""
-    from .uno_bundle import is_uno_candidate, resolve_uno_bundle
+    """Expose Uno adapters as helpers, like external MTP drafters."""
+    from .uno_bundle import uno_base_id
 
-    if model_id in models:
-        logger.warning(
-            "Duplicate Uno model_id %s; keeping first registration", model_id
-        )
-        return True
-    try:
-        if not is_uno_candidate(model_dir, source_repo_id):
-            return False
-        bundle = resolve_uno_bundle(model_dir, source_repo_id=source_repo_id)
-        models[model_id] = DiscoveredModel(
+    weights = model_dir / "adapter_model.safetensors"
+    if (
+        "uno" not in re.split(r"[-_/]", (source_repo_id or model_id).lower())
+        or not weights.is_file()
+        or uno_base_id(model_dir) is None
+    ):
+        return False
+    models.setdefault(
+        model_id,
+        DiscoveredModel(
             model_id=model_id,
             model_path=str(model_dir),
             model_type="llm",
-            engine_type="uno",
-            estimated_size=bundle.estimated_size,
-            config_model_type="k2_horizon",
-            thinking_default=detect_thinking_default(bundle.base_path),
-            preserve_thinking_default=detect_preserve_thinking(bundle.base_path),
-            model_context_length=bundle.context_length,
+            engine_type="batched",
+            estimated_size=weights.stat().st_size,
+            config_model_type="k2_horizon_uno",
+            is_helper=True,
             source_type=source_type,
             source_repo_id=source_repo_id,
-        )
-    except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
-        logger.warning("Cannot register Uno model %s: %s", model_id, error)
+        ),
+    )
     return True
 
 

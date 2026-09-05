@@ -188,7 +188,6 @@ class EngineEntry:
         "llm", "vlm", "embedding", "reranker", "audio_stt", "audio_tts", "audio_sts"
     ]  # Model type
     engine_type: Literal[
-        "uno",
         "batched",
         "simple",
         "embedding",
@@ -375,6 +374,11 @@ class EnginePool:
                 format_size(extra),
                 entry.model_id,
             )
+        if getattr(runtime_settings, "uno_enabled", False):
+            adapter = self._entries.get(runtime_settings.uno_adapter_model)
+            if adapter is None or adapter.config_model_type != "k2_horizon_uno":
+                raise ValueError("Select an available Uno adapter.")
+            base = entry.estimated_size + adapter.estimated_size
         return base + extra
 
     def _qwen4_ple_offload_status(
@@ -759,6 +763,9 @@ class EnginePool:
             add("vlm_mtp_draft_model", data.get("vlm_mtp_draft_model"))
             add("vlm_mtp_draft_block_size", data.get("vlm_mtp_draft_block_size"))
 
+        add("uno_enabled", bool(data.get("uno_enabled", False)))
+        if data.get("uno_enabled"):
+            add("uno_adapter_model", data.get("uno_adapter_model"))
         return tuple(signature)
 
     @property
@@ -886,12 +893,6 @@ class EnginePool:
         """Apply model_type_override from persisted settings to discovered entries."""
         for model_id, entry in self._entries.items():
             settings = settings_manager.get_settings(model_id)
-            if entry.engine_type == "uno":
-                if settings.model_type_override not in (None, "llm"):
-                    logger.warning(
-                        "Ignoring incompatible model_type override for Uno %s", model_id
-                    )
-                continue
             if settings.model_type_override:
                 entry.model_type = settings.model_type_override
                 entry.engine_type = self._MODEL_TYPE_TO_ENGINE.get(
@@ -1106,15 +1107,6 @@ class EnginePool:
     ) -> None:
         """Drop stale unloaded entries whose backing model directory vanished."""
         model_path = Path(entry.model_path)
-        if (
-            entry.engine_type == "uno"
-            and model_path.is_dir()
-            and any(
-                (model_path / name).is_file()
-                for name in ("uno_config.json", "adapter_config.json")
-            )
-        ):
-            return
         if model_path.exists() and (model_path / "config.json").exists():
             return
 
@@ -2607,6 +2599,8 @@ class EnginePool:
         pre_load_memory = max(mx.get_active_memory(), get_phys_footprint())
         try:
             effective_type = entry.engine_type
+            if entry.config_model_type == "k2_horizon_uno":
+                raise ValueError("Select a compatible K2 base and enable Uno in its settings.")
             if force_lm and effective_type == "vlm":
                 effective_type = "batched"
                 logger.info(f"Loading model as LM (force_lm=True): {model_id}")
@@ -2620,12 +2614,9 @@ class EnginePool:
             model_settings = self._effective_qwen4_model_settings(entry, model_settings)
 
             deployment = self._distributed_deployment_for_entry(entry)
-            if effective_type == "uno" and deployment is not None:
-                raise ValueError("Uno does not support distributed deployment")
-            if effective_type == "uno" and model_settings is not None:
-                for flag in ("dflash_enabled", "mtp_enabled", "vlm_mtp_enabled"):
-                    if getattr(model_settings, flag, False):
-                        raise ValueError(f"Uno does not support {flag}")
+            uno_enabled = bool(getattr(model_settings, "uno_enabled", False))
+            if uno_enabled and deployment is not None:
+                raise ValueError("Uno does not support distributed deployment.")
             base_resident_size = self._entry_resident_size(entry)
             if (
                 deployment is None
@@ -2662,7 +2653,7 @@ class EnginePool:
             engine = None
             deployment = deployment if effective_type == "batched" else None
             if (
-                effective_type != "uno"
+                not uno_enabled
                 and deployment is None
                 and model_settings is not None
             ):
@@ -2740,11 +2731,13 @@ class EnginePool:
 
             # Create engine based on engine type (if DFlash not active)
             if engine is None:
-                if effective_type == "uno":
+                if uno_enabled:
                     from .engine.uno import UnoEngine
 
+                    adapter = self._entries[model_settings.uno_adapter_model]
                     engine = UnoEngine(
                         model_name=entry.model_path,
+                        adapter_path=adapter.model_path,
                         scheduler_config=self._scheduler_config,
                         model_settings=model_settings,
                     )

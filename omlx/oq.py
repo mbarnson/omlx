@@ -7667,7 +7667,7 @@ def _collect_glm5_next_lm_head_imatrix(model, hidden, collector) -> bool:
 
 
 def _collect_k2_horizon_lm_head_imatrix(model, hidden, collector) -> bool:
-    """Capture K2 Horizon's untied output head; the trunk-layer walk never invokes it."""
+    """Capture the untied output head omitted by the trunk-layer walk."""
     if str(getattr(model, "model_type", "")) != "k2_horizon":
         return False
 
@@ -7679,7 +7679,6 @@ def _collect_k2_horizon_lm_head_imatrix(model, hidden, collector) -> bool:
     name = "lm_head"
     module = collector._original_modules.get(name)
     if module is None:
-        # Tied checkpoints project through embed_tokens and have no lm_head.
         return False
 
     if getattr(hidden, "ndim", 0) == 4:

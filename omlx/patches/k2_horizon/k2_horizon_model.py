@@ -61,161 +61,29 @@ class ModelArgs(BaseModelArgs):
 
     def __post_init__(self):
         self.rope_parameters = dict(self.rope_parameters)
-        nested_theta = self.rope_parameters.get("rope_theta")
-        if self.rope_theta is not None and nested_theta is not None:
-            self._require(
-                self.rope_theta == nested_theta, "rope_theta", self.rope_theta
-            )
-        self.rope_theta = nested_theta if nested_theta is not None else self.rope_theta
-        self._require(
-            isinstance(self.rope_theta, (int, float))
-            and math.isfinite(self.rope_theta)
-            and self.rope_theta > 1,
-            "rope_theta",
-            self.rope_theta,
-        )
-        self.rope_parameters["rope_theta"] = self.rope_theta
-        rope_type = self.rope_parameters.get("rope_type", "default")
-        self._require(
-            rope_type in ("default", "yarn"), "rope_parameters.rope_type", rope_type
-        )
-        self.rope_head_dim = (
-            self.head_dim if self.rope_head_dim is None else self.rope_head_dim
-        )
-        self._require(
-            0 < self.rope_head_dim <= self.head_dim and self.rope_head_dim % 2 == 0,
-            "rope_head_dim",
-            self.rope_head_dim,
-        )
-        if rope_type == "yarn":
-            for key in (
-                "factor",
-                "original_max_position_embeddings",
-                "beta_fast",
-                "beta_slow",
-                "attention_factor",
-            ):
-                value = self.rope_parameters.get(key)
-                self._require(
-                    isinstance(value, (int, float))
-                    and math.isfinite(value)
-                    and value > 0,
-                    f"rope_parameters.{key}",
-                    value,
-                )
-            self._require(
-                isinstance(self.rope_parameters.get("truncate", True), bool),
-                "rope_parameters.truncate",
-                self.rope_parameters.get("truncate"),
-            )
-        self._require(self.hidden_act == "silu", "hidden_act", self.hidden_act)
-        self._require(not self.use_sliding_window, "use_sliding_window", True)
-        self._require(
-            self.sliding_window is None, "sliding_window", self.sliding_window
-        )
-        self._require(not self.query_key_norm, "query_key_norm", True)
-        self._require(
-            self.attention_gate_func in (None, "softplus"),
-            "attention_gate_func",
-            self.attention_gate_func,
-        )
-        self._require(
-            self.layernorm_num_groups in (1, 2, 4),
-            "layernorm_num_groups",
-            self.layernorm_num_groups,
-        )
-        self._require(
-            self.hidden_size > 0 and self.hidden_size % self.layernorm_num_groups == 0,
-            "hidden_size",
-            self.hidden_size,
-        )
-        self._require(
-            self.num_key_value_heads > 0
-            and self.num_attention_heads % self.num_key_value_heads == 0,
-            "num_key_value_heads",
-            self.num_key_value_heads,
-        )
-        self._require(
-            self.decoder_sparse_step > 0,
-            "decoder_sparse_step",
-            self.decoder_sparse_step,
-        )
-        self._require(
-            all(0 <= i < self.num_hidden_layers for i in self.mlp_only_layers),
-            "mlp_only_layers",
-            self.mlp_only_layers,
-        )
-        self._require(self.num_experts >= 0, "num_experts", self.num_experts)
-        self._require(
-            self.mova_num_experts >= 0, "mova_num_experts", self.mova_num_experts
-        )
+        self.rope_theta = self.rope_parameters.get("rope_theta", self.rope_theta)
+        self.rope_head_dim = self.rope_head_dim or self.head_dim
         if self.router_scaling_factor is None:
             self.router_scaling_factor = 1.0
-        if self.num_experts:
-            self._require(
-                0 < self.num_experts_per_tok <= self.num_experts,
-                "num_experts_per_tok",
-                self.num_experts_per_tok,
+        if (
+            self.hidden_act != "silu"
+            or self.query_key_norm
+            or self.use_sliding_window
+            or self.sliding_window is not None
+            or self.attention_gate_func not in (None, "softplus")
+            or self.rope_parameters.get("rope_type", "default")
+            not in ("default", "yarn")
+        ):
+            raise ValueError(
+                "Unsupported K2 activation, attention or RoPE configuration"
             )
-            self._require(
-                self.num_shared_experts == 1,
-                "num_shared_experts",
-                self.num_shared_experts,
-            )
-            self._require(
-                self.moe_intermediate_size > 0,
-                "moe_intermediate_size",
-                self.moe_intermediate_size,
-            )
-            self._require(
-                any(self.is_sparse_layer(i) for i in range(self.num_hidden_layers)),
-                "mlp_only_layers",
-                self.mlp_only_layers,
-            )
-            self._require(
-                self.router_score_func == "sigmoid",
-                "router_score_func",
-                self.router_score_func,
-            )
-            self._require(self.norm_topk_prob, "norm_topk_prob", False)
-            self._require(self.moe_gate_bias, "moe_gate_bias", False)
-            self._require(
-                self.hidden_size % SOURCE_ROUTER_GEMM_PARTITIONS == 0,
-                "hidden_size",
-                self.hidden_size,
-            )
-            self._require(
-                isinstance(self.router_scaling_factor, (int, float))
-                and math.isfinite(self.router_scaling_factor)
-                and self.router_scaling_factor > 0,
-                "router_scaling_factor",
-                self.router_scaling_factor,
-            )
-        else:
-            for key in (
-                "num_experts_per_tok",
-                "num_shared_experts",
-                "moe_intermediate_size",
-                "mova_num_experts",
-            ):
-                self._require(getattr(self, key) == 0, key, getattr(self, key))
-        if self.mova_num_experts:
-            self._require(
-                0 < self.mova_num_experts_per_tok <= self.mova_num_experts,
-                "mova_num_experts_per_tok",
-                self.mova_num_experts_per_tok,
-            )
-        else:
-            self._require(
-                self.mova_num_experts_per_tok == 0,
-                "mova_num_experts_per_tok",
-                self.mova_num_experts_per_tok,
-            )
-
-    @staticmethod
-    def _require(condition: bool, field: str, value: Any) -> None:
-        if not condition:
-            raise ValueError(f"Unsupported K2 Horizon config: {field}={value!r}")
+        if self.num_experts and (
+            self.router_score_func != "sigmoid"
+            or not self.norm_topk_prob
+            or not self.moe_gate_bias
+            or self.num_shared_experts != 1
+        ):
+            raise ValueError("Unsupported K2 expert routing configuration")
 
     def is_sparse_layer(self, layer_idx: int) -> bool:
         return (

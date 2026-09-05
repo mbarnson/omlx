@@ -28,7 +28,6 @@ def probabilities(logits, temperature, top_p=1.0, top_k=None):
 
 
 def acceptance_and_residual(p, q, proposals, uniforms):
-    """Return proposal accept flags and normalized positive residuals."""
     pt = mx.take_along_axis(p, proposals[..., None], axis=-1).squeeze(-1)
     qt = mx.take_along_axis(q, proposals[..., None], axis=-1).squeeze(-1)
     ratio = mx.where(qt > 0, pt / mx.where(qt > 0, qt, 1), 0)
@@ -38,31 +37,6 @@ def acceptance_and_residual(p, q, proposals, uniforms):
     # Matches the reference's degenerate-residual rule; p == q always accepts.
     residual = mx.where(mass > 0, residual / mx.where(mass > 0, mass, 1), p)
     return accepted, residual
-
-
-def _mix_u64(value):
-    value &= 0xFFFFFFFFFFFFFFFF
-    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
-    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
-    return (value ^ (value >> 31)) & 0xFFFFFFFFFFFFFFFF
-
-
-def deterministic_noise(prompt, committed, count, vocab_size, salt=0):
-    """Reproduce the official deterministic-uniform noise convention."""
-    seed = 0xD6E8FEB86659FD93
-    for token in prompt:
-        seed = _mix_u64(seed ^ token)
-    base = (
-        seed * 0x9E3779B185EBCA87
-        + salt * 0xD1B54A32D192ED03
-        + (len(committed) - len(prompt)) * 0xC2B2AE3D27D4EB4F
-        + committed[-1] * 0x165667B19E3779F9
-        + len(committed) * 0x85EBCA77C2B2AE63
-    )
-    return [
-        1 + _mix_u64(base + i * 0x27D4EB2F165667C5) % (vocab_size - 1)
-        for i in range(count)
-    ]
 
 
 @dataclass(frozen=True)
@@ -88,8 +62,6 @@ class UnoDecoder:
         top_p=0.95,
         top_k=None,
         seed=0,
-        noise_mode="random_uniform",
-        use_cache=True,
         prefill_step_size=512,
     ):
         if not getattr(model, "_uno_adapter_loaded", False):
@@ -104,15 +76,11 @@ class UnoDecoder:
             type(top_k) is not int or not 0 < top_k <= model.args.vocab_size
         ):
             raise ValueError("Uno top_k must be positive and within vocabulary")
-        if noise_mode not in ("random_uniform", "deterministic_uniform"):
-            raise ValueError("K2 Uno requires uniform replacement noise")
         self.model = model
         self.eos = set(eos_token_ids)
         self.block_size = block_size
         self.temperature, self.top_p, self.top_k = temperature, top_p, top_k
         self.key = mx.random.key(seed)
-        self.noise_mode = noise_mode
-        self.use_cache = use_cache
         if type(prefill_step_size) is not int or prefill_step_size <= 0:
             raise ValueError("Uno prefill_step_size must be a positive integer")
         self.prefill_step_size = prefill_step_size
@@ -136,7 +104,7 @@ class UnoDecoder:
             if layer.offset != length:
                 raise RuntimeError("Uno KV rollback failed")
 
-    def generate(self, prompt, *, max_tokens, cancelled=None, trace=None):
+    def generate(self, prompt, *, max_tokens, cancelled=None):
         if not prompt or type(max_tokens) is not int or max_tokens < 0:
             raise ValueError(
                 "Uno requires a nonempty prompt and nonnegative max_tokens"
@@ -147,8 +115,8 @@ class UnoDecoder:
         ):
             raise ValueError("Uno prompt token outside vocabulary")
         committed = list(prompt)
-        cache = make_prompt_cache(self.model) if self.use_cache else None
-        if cache is not None and len(prompt) > 1 and max_tokens:
+        cache = make_prompt_cache(self.model)
+        if len(prompt) > 1 and max_tokens:
             for start in range(0, len(prompt) - 1, self.prefill_step_size):
                 if cancelled is not None and cancelled():
                     return
@@ -160,43 +128,19 @@ class UnoDecoder:
             if cancelled is not None and cancelled():
                 return
             length = min(self.block_size, max_tokens - emitted)
-            rng_before = self.key
             frontier = len(committed)
-            if cache is not None and any(
-                layer.offset != frontier - 1 for layer in cache
-            ):
+            if any(layer.offset != frontier - 1 for layer in cache):
                 raise RuntimeError("Uno draft must start with one uncached seed")
-            if self.noise_mode == "deterministic_uniform":
-                noise = mx.array(
-                    deterministic_noise(
-                        prompt, committed, length - 1, self.model.args.vocab_size
-                    ),
-                    dtype=mx.int32,
-                )
-            else:
-                noise = mx.random.randint(
-                    1, self.model.args.vocab_size, shape=(length - 1,), key=self._key()
-                )
+            noise = mx.random.randint(
+                1, self.model.args.vocab_size, shape=(length - 1,), key=self._key()
+            )
             draft = mx.concatenate([mx.array([committed[-1]]), noise])[None]
             row_mask = mx.concatenate([mx.zeros((1,)), mx.ones((length - 1,))])[None]
-            if cache is not None:
-                draft_logits = self.model(draft, cache=cache, lora_mask=row_mask)[0]
-            else:
-                inputs = mx.concatenate(
-                    [mx.array([committed[:-1]], dtype=mx.int32), draft], axis=1
-                )
-                mask = mx.concatenate([mx.zeros((1, frontier - 1)), row_mask], axis=1)
-                draft_logits = self.model(inputs, lora_mask=mask)[0, -length:]
+            draft_logits = self.model(draft, cache=cache, lora_mask=row_mask)[0]
             proposals, q = self._sample(draft_logits)
             mx.eval(proposals, q)
-            if cache is not None:
-                self._trim(cache, frontier)
-                verify_logits = self.model(proposals[None], cache=cache)[0]
-            else:
-                inputs = mx.concatenate(
-                    [mx.array([committed]), proposals[None]], axis=1
-                )
-                verify_logits = self.model(inputs)[0, -length:]
+            self._trim(cache, frontier)
+            verify_logits = self.model(proposals[None], cache=cache)[0]
             targets, p = self._sample(verify_logits)
             uniforms = residual = None
             if self.temperature == 0:
@@ -234,31 +178,7 @@ class UnoDecoder:
                 return
             committed.extend(output)
             emitted += len(output)
-            if cache is not None:
-                self._trim(cache, len(committed) - 1)
-            if trace is not None:
-                trace(
-                    {
-                        "draft_ids": draft.tolist()[0],
-                        "row_mask": row_mask.tolist()[0],
-                        "proposals": proposed,
-                        "accepted": accepted,
-                        "committed": output,
-                        "cache_before": frontier - 1,
-                        "cache_after": len(committed) - 1,
-                        "draft_logits": draft_logits,
-                        "verify_logits": verify_logits,
-                        "proposal_probabilities": q,
-                        "target_probabilities": p,
-                        "acceptance_uniforms": uniforms,
-                        "acceptance_flags": flags,
-                        "residual_probabilities": residual,
-                        "correction_tokens": corrections,
-                        "target_samples": targets,
-                        "rng_before": rng_before,
-                        "rng_after": self.key,
-                    }
-                )
+            self._trim(cache, len(committed) - 1)
             if finish is None and emitted == max_tokens:
                 finish = "length"
             yield UnoCycle(

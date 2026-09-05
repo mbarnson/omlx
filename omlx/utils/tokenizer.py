@@ -601,8 +601,7 @@ def get_tokenizer_config(
         )
 
     if _is_k2_horizon_model(model_name):
-        # The IFM template shares no marker with mlx-lm's parser sniffing, so
-        # the vendored parser must be pinned or tool calls are never parsed.
+        # Register IFM markers that mlx-lm's parser detection does not recognize.
         config.setdefault("tool_parser_type", "k2_horizon")
         logger.debug("K2 Horizon detected: setting tool_parser_type to k2_horizon")
 

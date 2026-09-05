@@ -394,8 +394,6 @@ def maybe_apply_pre_load_patches(
     - Ling 3.0 Flash mixed MLA/KDA model when ``config.json`` declares
       ``model_type == "bailing_hybrid"``. The vendored module is registered
       as ``mlx_lm.models.bailing_hybrid`` before mlx-lm resolves its classes.
-    - K2 Horizon MoVA model and IFM tool parser when ``config.json`` declares
-      ``model_type == "k2_horizon"``.
     - Llama 4 attention offset patch when ``config.json`` declares
       ``model_type == "llama4"`` directly or under ``text_config``.
     - GLM-5.2 ``glm_moe_dsa`` patch (mlx-lm PR 1410) when ``config.json``

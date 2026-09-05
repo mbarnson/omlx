@@ -6252,7 +6252,6 @@ class Scheduler:
             if last_idx is None:
                 continue
 
-            # <think> found. Check if </think> follows it (disabled thinking pattern).
             after_start = last_tokens[last_idx + len(think_start_ids) :]
             if after_start:
                 think_end_ids = (

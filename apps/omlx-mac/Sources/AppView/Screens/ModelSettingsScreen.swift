@@ -1645,6 +1645,24 @@ private struct ExperimentalSection: View {
                 }
             }
 
+            if vm.isK2Base {
+                Row(label: String(localized: "settings.uno.enable", defaultValue: "Enable Uno"),
+                    sublabel: vm.unoUnavailableReason ?? String(
+                        localized: "settings.uno.hint",
+                        defaultValue: "Use a conditional diffusion adapter with this base model.")) {
+                    RowSwitch(isOn: vm.bindProfile($vm.unoEnabled))
+                        .disabled(!vm.unoEnabled && vm.unoUnavailableReason != nil)
+                        .accessibilityIdentifier("uno.enabled")
+                }
+                if vm.unoEnabled {
+                    Row(label: String(localized: "settings.uno.adapter", defaultValue: "Uno adapter")) {
+                        Popup(selection: vm.bindProfile($vm.unoAdapterModel),
+                              width: .controlWide, options: vm.unoAdapterModelOptions())
+                            .accessibilityIdentifier("uno.adapter")
+                    }
+                }
+            }
+
             // VLM MTP — last row of the experimental group. Reveals the
             // draft-model picker and block-size field when enabled.
             Row(label: String(localized: "settings.experimental.vlm_mtp.label",

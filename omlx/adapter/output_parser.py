@@ -1267,15 +1267,9 @@ class K2HorizonOutputParserSession:
         if self._detokenizer is not None:
             self._detokenizer.reset()
 
-        try:
-            from ..api.tool_calling import ToolCallStreamFilter
+        from ..api.tool_calling import ToolCallStreamFilter
 
-            self._stream_filter = ToolCallStreamFilter(tokenizer)
-            self._visible_filter = ToolCallStreamFilter(tokenizer)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("K2 Horizon stream filter unavailable: %s", e)
-            self._stream_filter = None
-            self._visible_filter = None
+        self._tool_filter = ToolCallStreamFilter(tokenizer)
 
     def notify_prefilled_thought(self) -> None:
         self._in_reasoning = True
@@ -1289,20 +1283,11 @@ class K2HorizonOutputParserSession:
         except TypeError:
             return self._tokenizer.decode([token_id])
 
-    @staticmethod
-    def _filtered_text(text: str, tool_filter: Any) -> str:
-        if not text:
-            return ""
-        if tool_filter is not None:
-            return tool_filter.feed(text)
-        return text
-
     def _emit(self, text: str) -> OutputParserTokenResult:
         self._raw_text += text
+        visible = self._tool_filter.feed(text)
         return OutputParserTokenResult(
-            stream_text=self._filtered_text(text, self._stream_filter),
-            visible_text=self._filtered_text(text, self._visible_filter),
-            record_token=True,
+            stream_text=visible, visible_text=visible, record_token=True
         )
 
     def process_token(self, token_id: int) -> OutputParserTokenResult:
@@ -1325,19 +1310,13 @@ class K2HorizonOutputParserSession:
         return self._emit(text)
 
     def finalize(self) -> OutputParserFinalizeResult:
-        stream_text = ""
-        visible_text = ""
+        text = ""
         if self._detokenizer is not None:
             self._detokenizer.finalize()
             final_text = self._detokenizer.last_segment
-            if final_text:
-                self._raw_text += final_text
-                stream_text += self._filtered_text(final_text, self._stream_filter)
-                visible_text += self._filtered_text(final_text, self._visible_filter)
-        if self._stream_filter is not None:
-            stream_text += self._stream_filter.finish()
-        if self._visible_filter is not None:
-            visible_text += self._visible_filter.finish()
+            self._raw_text += final_text
+            text = self._tool_filter.feed(final_text)
+        text += self._tool_filter.finish()
 
         tool_calls: list[dict[str, str]] = []
         if self._tools:
@@ -1373,8 +1352,8 @@ class K2HorizonOutputParserSession:
                 logger.debug("K2 Horizon tool-call parse failed: %s", e)
 
         return OutputParserFinalizeResult(
-            stream_text=stream_text,
-            visible_text=visible_text,
+            stream_text=text,
+            visible_text=text,
             tool_calls=tool_calls,
             finish_reason="tool_calls" if tool_calls else None,
         )

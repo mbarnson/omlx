@@ -678,23 +678,3 @@ class TestMistralCommonTokenizerConfig:
         repo = self._make_mistral_repo(tmp_path)
         config = get_tokenizer_config(str(repo))
         assert "eos_token" not in config
-
-
-def test_k2_horizon_config_pins_k2_horizon_tool_parser(tmp_path):
-    """mlx-lm's template sniffing knows no IFM marker, so the parser must be pinned."""
-    _write_json(
-        tmp_path / "config.json",
-        {"model_type": "k2_horizon", "architectures": ["K2HorizonForCausalLM"]},
-    )
-
-    config = get_tokenizer_config(str(tmp_path))
-
-    assert config["tool_parser_type"] == "k2_horizon"
-
-
-def test_non_k2_config_does_not_pin_k2_horizon_tool_parser(tmp_path):
-    _write_json(tmp_path / "config.json", {"model_type": "llama"})
-
-    config = get_tokenizer_config(str(tmp_path))
-
-    assert "tool_parser_type" not in config

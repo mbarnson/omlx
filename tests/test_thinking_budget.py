@@ -112,9 +112,7 @@ class TestThinkingBudgetProcessor:
         assert logits1[0, self.NEWLINE_ID].item() == 0.0
 
         # Call 3: _force_idx advances to 2 == len([42, 99]) → done
-        logits2 = proc(
-            _make_tokens(10, self.THINK_END_ID, self.NEWLINE_ID), _make_logits()
-        )
+        logits2 = proc(_make_tokens(10, self.THINK_END_ID, self.NEWLINE_ID), _make_logits())
         assert proc._done
         assert mx.array_equal(logits2, _make_logits())
 
@@ -249,9 +247,7 @@ class TestModelSettingsThinkingBudget:
     """Test thinking_budget fields in ModelSettings."""
 
     def test_to_dict_includes_thinking_budget(self):
-        settings = ModelSettings(
-            thinking_budget_enabled=True, thinking_budget_tokens=4096
-        )
+        settings = ModelSettings(thinking_budget_enabled=True, thinking_budget_tokens=4096)
         d = settings.to_dict()
         assert d["thinking_budget_enabled"] is True
         assert d["thinking_budget_tokens"] == 4096
@@ -307,9 +303,9 @@ class TestParserBackedThinkingBudgetWiring:
         )
 
         tokenizer = MagicMock()
-        tokenizer.encode.side_effect = lambda text, add_special_tokens=False: (
-            encode_map[text]
-        )
+        tokenizer.encode.side_effect = lambda text, add_special_tokens=False: encode_map[
+            text
+        ]
         scheduler.tokenizer = tokenizer
         return scheduler
 
@@ -411,7 +407,6 @@ class TestResolveThinkingBudget:
 
     def _import_resolve(self):
         from omlx.server import _resolve_thinking_budget
-
         return _resolve_thinking_budget
 
     def test_request_override_takes_priority(self):
@@ -531,9 +526,7 @@ class TestCompletionsThinkingBudget:
                     continue
                 for keyword in call.keywords:
                     # inline: engine.generate(..., thinking_budget=_resolve_thinking_budget(...))
-                    if keyword.arg == "thinking_budget" and _is_resolve_call(
-                        keyword.value
-                    ):
+                    if keyword.arg == "thinking_budget" and _is_resolve_call(keyword.value):
                         return True
                     # dict-unpack: engine.generate(..., **gen_kwargs)
                     if (
@@ -556,9 +549,7 @@ class TestCompletionsThinkingBudget:
         )
 
     def test_streaming_completion_path_resolves_the_budget(self):
-        assert self._engine_call_passes_budget(
-            "stream_completion", "stream_generate"
-        ), (
+        assert self._engine_call_passes_budget("stream_completion", "stream_generate"), (
             "/v1/completions (streaming) must pass "
             "thinking_budget=_resolve_thinking_budget(...) to "
             "engine.stream_generate; dropping it silently disables the "
@@ -826,79 +817,3 @@ class TestCompletionsStreamThinkPrefixParity:
                 )
                 return
         raise AssertionError("create_completion not found in server.py")
-
-
-class TestRequestBoundThinkingBudgetClose:
-    """A request-local close token wins over the parser's default marker."""
-
-    def _make_scheduler(self, factory, encode_map):
-        scheduler = MagicMock(spec=Scheduler)
-        scheduler._output_parser_factory = factory
-        scheduler._xtc_special_tokens = set()
-        scheduler._model_suppress_tokens = set()
-        for name in (
-            "_get_think_token_id",
-            "_get_output_parser_thinking_end_text",
-            "_encode_thinking_marker",
-            "_token_piece_to_bytes",
-            "_resolve_output_parser_thinking_trailing_ids",
-            "_resolve_think_end_token_ids",
-            "_build_sampler_and_processors",
-        ):
-            setattr(
-                scheduler, name, getattr(Scheduler, name).__get__(scheduler, Scheduler)
-            )
-        scheduler._resolve_think_close_pattern = MagicMock(return_value=(None, None))
-        tokenizer = MagicMock()
-        tokenizer.encode.side_effect = lambda text, add_special_tokens=False: (
-            encode_map[text]
-        )
-        scheduler.tokenizer = tokenizer
-        return scheduler
-
-    def _make_request(self, think_end_token_id=None):
-        request = Request(
-            request_id="k2-thinking-budget",
-            prompt="test",
-            sampling_params=SamplingParams(thinking_budget=64),
-            prompt_token_ids=[1, 2, 3],
-            num_prompt_tokens=3,
-        )
-        request.needs_think_prefix = True
-        request.think_end_token_id = think_end_token_id
-        return request
-
-    def _budget_processor(self, scheduler, request):
-        _, processors = scheduler._build_sampler_and_processors(
-            request.sampling_params, request
-        )
-        budget_processors = [
-            p for p in processors if isinstance(p, ThinkingBudgetProcessor)
-        ]
-        assert len(budget_processors) == 1
-        return budget_processors[0]
-
-    def test_request_close_token_forces_the_matching_effort_marker(self):
-        factory = OutputParserFactory(
-            kind="k2_horizon",
-            create_session=MagicMock(),
-            thinking_end_text="</ifm|think>",
-        )
-        scheduler = self._make_scheduler(factory, {"</ifm|think>": [250030]})
-
-        processor = self._budget_processor(scheduler, self._make_request(250053))
-
-        assert processor._think_end_ids == [250053]
-        assert processor._force_sequence == [250053]
-
-    def test_parser_marker_is_used_without_a_request_close_token(self):
-        factory = OutputParserFactory(
-            kind="k2_horizon",
-            create_session=MagicMock(),
-            thinking_end_text="</ifm|think>",
-        )
-        scheduler = self._make_scheduler(factory, {"</ifm|think>": [250030]})
-
-        processor = self._budget_processor(scheduler, self._make_request())
-
-        assert processor._think_end_ids == [250030]

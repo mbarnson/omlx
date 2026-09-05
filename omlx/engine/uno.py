@@ -18,15 +18,65 @@ from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import detect_and_strip_partial
 from ..engine_core import get_mlx_executor
 from ..exceptions import InvalidRequestError
-from ..memory_monitor import MemoryMonitor, set_model_info_from_model
+from ..memory_monitor import (
+    MemoryMonitor,
+    raise_if_prefill_exceeds,
+    set_model_info_from_model,
+)
 from ..patches.k2_horizon import apply_k2_horizon_patch
 from ..patches.k2_horizon.uno_adapter import load_uno_adapter
 from ..patches.k2_horizon.uno_decode import UnoDecoder
 from ..uno_bundle import UnoBundle, resolve_uno_bundle
 from ..utils.model_loading import lm_load_compat
+from ..utils.proc_memory import get_phys_footprint
 from ..utils.tokenizer import get_tokenizer_config
 from .base import ActivityTrackingMixin, BaseEngine, GenerationOutput
-from .serial_prefill_guard import SerialPrefillGuard
+
+
+class _UnoPrefillGuard:
+    """Apply the process enforcer's watermarks to Uno prefill."""
+
+    def __init__(self, memory_monitor: MemoryMonitor, prefill_step_size: int):
+        self.memory_monitor = memory_monitor
+        self._prefill_step_size = prefill_step_size
+        self._last_mlx_active_memory_bytes: int = 0
+        self._prefill_memory_guard: bool = False
+        self._memory_hard_limit_bytes: int = 0
+        self._memory_hot_cache_used_bytes: int = 0
+        self._memory_static_ceiling_bytes: int = 0
+        self._memory_dynamic_ceiling_bytes: int = 0
+        self._memory_metal_cap_bytes: int = 0
+        self._memory_guard_tier: str = ""
+
+    def record_mlx_active_memory(self, active_bytes: int) -> None:
+        self._last_mlx_active_memory_bytes = max(0, int(active_bytes))
+
+    def _current_usage_bytes(self) -> int:
+        phys = max(
+            0, get_phys_footprint() - max(0, int(self._memory_hot_cache_used_bytes))
+        )
+        return max(self._last_mlx_active_memory_bytes, phys)
+
+    def preflight_or_raise(
+        self,
+        *,
+        num_prompt_tokens: int,
+        request_id: str | None = None,
+        extra_bytes: int = 0,
+    ) -> None:
+        raise_if_prefill_exceeds(
+            self.memory_monitor,
+            prefill_memory_guard=self._prefill_memory_guard,
+            hard_limit_bytes=self._memory_hard_limit_bytes,
+            current_usage_bytes=self._current_usage_bytes() + max(0, extra_bytes),
+            prefill_step_size=self._prefill_step_size,
+            num_prompt_tokens=num_prompt_tokens,
+            request_id=request_id,
+            static_ceiling_bytes=self._memory_static_ceiling_bytes,
+            dynamic_ceiling_bytes=self._memory_dynamic_ceiling_bytes,
+            metal_cap_bytes=self._memory_metal_cap_bytes,
+            memory_guard_tier=self._memory_guard_tier,
+        )
 
 
 class _StopBuffer:
@@ -63,9 +113,12 @@ class UnoEngine(ActivityTrackingMixin, BaseEngine):
 
     is_uno_model = True
 
-    def __init__(self, model_name, *, scheduler_config=None, model_settings=None):
+    def __init__(
+        self, model_name, *, adapter_path, scheduler_config=None, model_settings=None
+    ):
         super().__init__()
         self._model_name = str(model_name)
+        self._adapter_path = adapter_path
         self._settings = model_settings
         self._scheduler_config = scheduler_config
         self._model = self._tokenizer = self._executor_tokenizer = None
@@ -103,7 +156,7 @@ class UnoEngine(ActivityTrackingMixin, BaseEngine):
         mx.eval(model.parameters())
         monitor = MemoryMonitor(max_kv_cache_memory=None, eviction_enabled=False)
         set_model_info_from_model(monitor, model)
-        guard = SerialPrefillGuard(monitor, self._prefill_step)
+        guard = _UnoPrefillGuard(monitor, self._prefill_step)
         guard.record_mlx_active_memory(mx.get_active_memory())
         factory = detect_output_parser(str(bundle.base_path), tokenizer, bundle.config)
         if factory is None or factory.kind != "k2_horizon":
@@ -114,18 +167,7 @@ class UnoEngine(ActivityTrackingMixin, BaseEngine):
         async with self._lock:
             if self._model is not None:
                 return
-            for flag in (
-                "mtp_enabled",
-                "vlm_mtp_enabled",
-                "dflash_enabled",
-                "turboquant_kv_enabled",
-                "qwen35_ane_prefill_enabled",
-                "thinking_budget_enabled",
-                "guided_grammar_enabled",
-            ):
-                if getattr(self._settings, flag, False):
-                    raise ValueError(f"Uno does not support {flag}")
-            bundle = resolve_uno_bundle(self._model_name)
+            bundle = resolve_uno_bundle(self._model_name, self._adapter_path)
 
             result = await asyncio.get_running_loop().run_in_executor(
                 get_mlx_executor(), self._load_model, bundle
@@ -237,8 +279,7 @@ class UnoEngine(ActivityTrackingMixin, BaseEngine):
             raise InvalidRequestError(
                 f"Uno prompt plus max_tokens exceeds context length {context}"
             )
-        # Include the entire future KV allocation and proposal/verification
-        # distributions. Prefill's dense logits can also exceed the KV size.
+        # Account for future KV, proposal distributions and dense prefill logits.
         transient = (
             max(self._prefill_step, self._bundle.block_size)
             * self._bundle.config["vocab_size"]
@@ -472,8 +513,7 @@ class UnoEngine(ActivityTrackingMixin, BaseEngine):
                 self._events.discard(event)
                 self._end_activity(activity)
 
-        # The producer owns the lock, so a client paused at yield cannot
-        # prevent stop() from cancelling work and unloading the model.
+        # Keep lock ownership with the producer so paused clients cannot block stop().
         producer = asyncio.create_task(produce())
         try:
             while True:
@@ -533,8 +573,6 @@ class UnoEngine(ActivityTrackingMixin, BaseEngine):
             "model_name": self.model_name,
             "loaded": self._model is not None,
             "adapter": self._adapter_info,
-            "base_revision": self._bundle.base_revision if self._bundle else None,
-            "adapter_revision": self._bundle.adapter_revision if self._bundle else None,
             "speculation": dict(self._last_speculation),
         }
 

@@ -23675,6 +23675,72 @@
         }
       }
     },
+    "settings.uno.enable" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Uno"
+          }
+        }
+      }
+    },
+    "settings.uno.hint" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use a conditional diffusion adapter with this base model."
+          }
+        }
+      }
+    },
+    "settings.uno.adapter" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uno adapter"
+          }
+        }
+      }
+    },
+    "settings.uno.select" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a Uno adapter"
+          }
+        }
+      }
+    },
+    "settings.uno.missing" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No compatible Uno adapter is available."
+          }
+        }
+      }
+    },
+    "settings.uno.conflict" : {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disable other decode accelerators, grammar constraints and thinking budgets. Clear Min P and penalty settings."
+          }
+        }
+      }
+    },
     "settings.vlm_mtp.conflict.dflash" : {
       "comment" : "Tooltip / sublabel shown when VLM MTP can't be enabled because DFlash is on",
       "extractionState" : "manual",

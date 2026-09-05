@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -43,7 +42,6 @@ class ConditionalLoRALinear(nn.Module):
 
 
 def load_uno_adapter(model, path: str | Path, *, base_model_id: str) -> dict:
-    """Validate every adapter pair before mutating any projection in the model."""
     path = Path(path)
     config = json.loads((path / "adapter_config.json").read_text())
     if base_model_id not in ("IFM/K2-Horizon-0.9B", "IFM/K2-Horizon-7B"):
@@ -95,35 +93,40 @@ def load_uno_adapter(model, path: str | Path, *, base_model_id: str) -> dict:
                 if any(key not in tensors for key in keys):
                     raise ValueError(f"Missing Uno LoRA pair: {prefix}")
                 base = getattr(parent, name)
-                if not isinstance(base, nn.Linear) or isinstance(
-                    base, nn.QuantizedLinear
-                ):
-                    raise ValueError(
-                        f"Uno BF16 lane requires an unquantized Linear: {prefix}"
-                    )
+                if not isinstance(base, (nn.Linear, nn.QuantizedLinear)):
+                    raise ValueError(f"Uno requires a Linear projection: {prefix}")
                 a, b = (tensors[key] for key in keys)
                 out_dims, in_dims = base.weight.shape
+                if isinstance(base, nn.QuantizedLinear):
+                    in_dims = in_dims * 32 // base.bits
                 if a.shape != (rank, in_dims) or b.shape != (out_dims, rank):
                     raise ValueError(
                         f"Uno LoRA shape mismatch: {prefix}: A={a.shape}, B={b.shape}, W={base.weight.shape}"
                     )
-                if (
-                    a.dtype != mx.bfloat16
-                    or b.dtype != mx.bfloat16
-                    or base.weight.dtype != mx.bfloat16
+                if any(
+                    t.dtype not in (mx.bfloat16, mx.float16, mx.float32) for t in (a, b)
                 ):
-                    raise ValueError(f"Uno BF16 lane requires BF16 weights: {prefix}")
+                    raise ValueError(
+                        f"Uno adapter requires floating-point weights: {prefix}"
+                    )
+                # The reference casts LoRA weights to the base activation dtype.
+                dtype = (
+                    base.scales.dtype
+                    if isinstance(base, nn.QuantizedLinear)
+                    else base.weight.dtype
+                )
+                a, b = a.astype(dtype), b.astype(dtype)
                 consumed.update(keys)
                 replacements.append((parent, name, base, a, b))
     if consumed != set(tensors):
         raise ValueError(
             f"Unexpected Uno adapter tensors: {sorted(set(tensors) - consumed)[:3]}"
         )
-    finite = mx.stack([mx.all(mx.isfinite(tensor)) for tensor in tensors.values()])
+    finite = mx.stack(
+        [mx.all(mx.isfinite(t)) for _, _, _, a, b in replacements for t in (a, b)]
+    )
     if not mx.all(finite).item():
         raise ValueError("Uno adapter contains non-finite weights")
-    with weights_path.open("rb") as handle:
-        digest = hashlib.file_digest(handle, "sha256").hexdigest()
     for parent, name, base, a, b in replacements:
         setattr(parent, name, ConditionalLoRALinear(base, a, b, alpha / rank))
     model.eval()
@@ -131,7 +134,6 @@ def load_uno_adapter(model, path: str | Path, *, base_model_id: str) -> dict:
     return {
         "base_model_id": base_model_id,
         "adapter_path": str(path),
-        "sha256": digest,
         "rank": rank,
         "alpha": alpha,
         "scale": alpha / rank,

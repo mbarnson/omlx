@@ -2925,6 +2925,9 @@ async def list_models(_: bool = Depends(verify_api_key)) -> ModelsResponse:
         excluded_model_ids: set[str] = set()
         for m in status["models"]:
             model_id = m["id"]
+            if m.get("config_model_type") == "k2_horizon_uno":
+                excluded_model_ids.add(model_id)
+                continue
             display_id = model_id
             ms = None
             if settings_manager:

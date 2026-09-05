@@ -6,13 +6,12 @@ from __future__ import annotations
 import functools
 import inspect
 import json
-import struct
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
 def checkpoint_files(path: Path) -> list[Path]:
-    """Validate shard membership and tensor ownership before loading weights."""
+    """Read the checkpoint index and require every listed shard."""
     index_path = path / "model.safetensors.index.json"
     weight_map = None
     if index_path.exists():
@@ -35,44 +34,14 @@ def checkpoint_files(path: Path) -> list[Path]:
     if not shards:
         raise FileNotFoundError(f"No K2 base safetensors in {path}")
 
-    seen = set()
     for shard in shards:
         if not shard.is_file():
             raise FileNotFoundError(f"Missing K2 checkpoint shard: {shard}")
-        with shard.open("rb") as handle:
-            prefix = handle.read(8)
-            if len(prefix) != 8:
-                raise ValueError(f"Truncated K2 safetensors header: {shard}")
-            length = struct.unpack("<Q", prefix)[0]
-            if not 0 < length <= 64 * 1024 * 1024:
-                raise ValueError(f"Invalid K2 safetensors header size: {shard}")
-            header = json.loads(handle.read(length))
-        for key, entry in header.items():
-            if key == "__metadata__":
-                continue
-            if key in seen:
-                raise ValueError(f"Duplicate K2 tensor: {key}")
-            if weight_map is not None and weight_map.get(key) != shard.name:
-                raise ValueError(f"K2 tensor not owned by manifest shard: {key}")
-            start, end = entry["data_offsets"]
-            if not 0 <= start <= end <= shard.stat().st_size - 8 - length:
-                raise ValueError(f"Truncated K2 tensor data: {key} in {shard}")
-            seen.add(key)
-    if weight_map is not None and seen != set(weight_map):
-        raise ValueError(
-            f"Missing K2 tensors from manifest: {sorted(set(weight_map) - seen)[:3]}"
-        )
     return shards
 
 
 def apply_checkpoint_patch() -> None:
-    """Give the pinned mlx-lm loader a manifest-selected, normalized shard view.
-
-    Only symlinks and the remapped index are temporary. The original loader
-    still owns model construction, quantization, strict loading, and evaluation.
-    Its mmap arrays retain the opened data after the temporary view is removed.
-    Tokenizer loading continues against the caller's original model directory.
-    """
+    """Normalize IFM's pytorch_model shard names for the mlx-lm loader."""
     from mlx_lm import utils
 
     _patch_tokenizer(utils)
