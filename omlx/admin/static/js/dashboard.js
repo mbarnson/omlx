@@ -74,6 +74,8 @@
         'mtp_adaptive_max_depth',
         'mtp_fixed_depth',
         'qwen35_ane_prefill_shared_fraction',
+        'uno_enabled',
+        'uno_adapter_model',
         'vlm_mtp_enabled',
         'vlm_mtp_draft_model',
         'vlm_mtp_draft_block_size',
@@ -1772,7 +1774,23 @@
                 return options;
             },
 
+            unoAdapterCandidates() {
+                const base = this.selectedModel?.uno_base_model_id;
+                return (this.models || []).filter(m => base
+                    && m.config_model_type === 'k2_horizon_uno'
+                    && m.uno_base_model_id === base);
+            },
 
+            unoConflict() {
+                const s = this.modelSettings || {};
+                return ['mtp_enabled', 'vlm_mtp_enabled', 'dflash_enabled',
+                    'specprefill_enabled', 'turboquant_kv_enabled',
+                    'qwen35_ane_prefill_enabled', 'guided_grammar_enabled',
+                    'enableThinkingBudget'].some(key => s[key])
+                    || [['min_p', 0], ['repetition_penalty', 1], ['presence_penalty', 0]]
+                        .some(([key, neutral]) => s[key] !== '' && s[key] != null
+                            && Number(s[key]) !== neutral);
+            },
 
             vlmMtpDraftModelCandidates() {
                 return this.draftModelCandidates(
@@ -1957,6 +1975,8 @@
                     is_paroquant: model?.is_paroquant === true,
                     paroquant_reason: model?.paroquant_reason || '',
                     qwen35_ane_prefill_shared_fraction: s.qwen35_ane_prefill_shared_fraction ?? 1,
+                    uno_enabled: s.uno_enabled || false,
+                    uno_adapter_model: s.uno_adapter_model || '',
                     vlm_mtp_enabled: s.vlm_mtp_enabled || false,
                     vlm_mtp_draft_model: s.vlm_mtp_draft_model || '',
                     vlm_mtp_draft_block_size: s.vlm_mtp_draft_block_size ?? null,
@@ -3015,6 +3035,8 @@
                                     : null,
                                 mtp_fixed_depth: null,
                                 qwen35_ane_prefill_shared_fraction: Number(this.modelSettings.qwen35_ane_prefill_shared_fraction),
+                                uno_enabled: !!this.modelSettings.uno_enabled,
+                                uno_adapter_model: this.modelSettings.uno_adapter_model || null,
                                 vlm_mtp_enabled: !!this.modelSettings.vlm_mtp_enabled,
                                 vlm_mtp_draft_model: this.modelSettings.vlm_mtp_enabled
                                     ? (this.modelSettings.vlm_mtp_draft_model || null)
@@ -3081,6 +3103,8 @@
                                     mtp_enabled: false,
                                     mtp_adaptive_max_depth: null,
                                     mtp_fixed_depth: null,
+                                    uno_enabled: false,
+                                    uno_adapter_model: null,
                                     vlm_mtp_enabled: false,
                                     vlm_mtp_draft_model: null,
                                     vlm_mtp_draft_block_size: null,

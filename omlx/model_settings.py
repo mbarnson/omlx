@@ -460,6 +460,9 @@ class ModelSettings:
     # Takes precedence over mtp_adaptive_max_depth; None = adaptive.
     mtp_fixed_depth: Optional[int] = None
 
+    uno_enabled: bool = False
+    uno_adapter_model: str | None = None
+
     # VLM MTP speculative decoding via external MTP drafter (mlx-vlm f96138e+).
     # Supported drafter types: gemma4_assistant (for Gemma 4 VLMs), qwen3_5_mtp
     # (for Qwen 3.5/3.6). Both resolve to draft_kind="mtp" in mlx-vlm.
@@ -506,6 +509,28 @@ class ModelSettings:
                 "qwen35_oq_a8_enabled and qwen35_ane_prefill_enabled cannot "
                 "both be True; choose one Qwen3.5 prefill accelerator per model"
             )
+        if self.uno_enabled:
+            if not self.uno_adapter_model:
+                raise ValueError("Enable Uno requires an adapter selection.")
+            for name in (
+                "mtp_enabled",
+                "vlm_mtp_enabled",
+                "dflash_enabled",
+                "specprefill_enabled",
+                "turboquant_kv_enabled",
+                "qwen35_ane_prefill_enabled",
+                "guided_grammar_enabled",
+                "thinking_budget_enabled",
+            ):
+                if getattr(self, name, False):
+                    raise ValueError(f"Uno cannot be combined with {name}.")
+            for name, neutral in (
+                ("min_p", 0),
+                ("repetition_penalty", 1),
+                ("presence_penalty", 0),
+            ):
+                if getattr(self, name) not in (None, neutral):
+                    raise ValueError(f"Uno requires {name}={neutral}.")
         # Native MTP is mutually exclusive with DFlash (also speculative).
         # Reject the combo at construction time so the conflict surfaces in
         # the admin UI / API rather than at model load. TurboQuant KV is
