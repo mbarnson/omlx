@@ -438,10 +438,8 @@ final class ModelSettingsScreenVM {
     }
 
     var unoAdapterCandidates: [ModelDTO] {
-        guard isK2Base, let base = model?.unoBaseModelId else { return [] }
-        return allModels.filter {
-            $0.configModelType == "k2_horizon_uno" && $0.unoBaseModelId == base
-        }
+        let ids = model?.unoAdapters ?? []
+        return allModels.filter { ids.contains($0.id) }
     }
 
     func unoAdapterModelOptions() -> [(String, String)] {
@@ -449,12 +447,18 @@ final class ModelSettingsScreenVM {
             + unoAdapterCandidates.map { ($0.id, $0.displayName ?? $0.id) }
     }
 
+    var thinkingBudgetAvailable: Bool {
+        !unoEnabled || model?.unoRequiredSettings?["thinking_budget_enabled"] == nil
+    }
+
     var unoConflictReason: String? {
-        let penalties = [(minP, 0.0), (repetitionPenalty, 1.0), (presencePenalty, 0.0)]
-        if mtpEnabled || vlmMtpEnabled || dflashEnabled || specprefillEnabled
-            || turboquantKvEnabled || qwen35AnePrefillEnabled || thinkingBudgetEnabled
-            || model?.settings?.guidedGrammarEnabled == true
-            || penalties.contains(where: { !$0.0.isEmpty && Double($0.0) != $0.1 }) {
+        var settings = currentSettingsDict()
+        settings["guided_grammar_enabled"] = AnyCodable(model?.settings?.guidedGrammarEnabled == true)
+        let conflicts = (model?.unoRequiredSettings ?? [:]).contains { key, neutral in
+            guard let value = settings[key]?.value as? NSNumber else { return false }
+            return value.doubleValue != neutral
+        }
+        if conflicts {
             return String(localized: "settings.uno.conflict",
                           defaultValue: "Disable other decode accelerators, Guided Grammar, and Thinking Budget. Set Min P and Presence Penalty to 0. Set Repetition Penalty to 1.0.")
         }
@@ -941,7 +945,7 @@ final class ModelSettingsScreenVM {
             patch.mtpAdaptiveMaxDepth = Int(mtpAdaptiveMaxDepth) ?? 3
             patch.mtpFixedDepth = .some(nil)
         case .unoEnabled, .unoAdapterModel:
-            guard isK2Base, validateUnoWorkingSettings() else { return }
+            guard model?.unoCompatible == true, validateUnoWorkingSettings() else { return }
             patch.unoEnabled = unoEnabled
             patch.unoAdapterModel = unoAdapterModel
         case .vlmMtpEnabled:           patch.vlmMtpEnabled = vlmMtpEnabled
@@ -1394,7 +1398,7 @@ final class ModelSettingsScreenVM {
                     out[ProfileSettingsKey.dflashSsdCacheMaxBytes] = AnyCodable(Int(bytes))
                 }
             }
-            if isK2Base {
+            if model?.unoCompatible == true {
                 putBool(ProfileSettingsKey.unoEnabled, unoEnabled)
                 putString(ProfileSettingsKey.unoAdapterModel, unoAdapterModel)
             }
