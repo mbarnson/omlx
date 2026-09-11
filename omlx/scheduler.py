@@ -3689,7 +3689,8 @@ class Scheduler:
                         )
                 if self._supports_skip_lm_head():
                     model_kwargs["skip_lm_head"] = True
-                self.model(
+                prefill_model = getattr(self.model, "_omlx_prefill", self.model)
+                prefill_model(
                     input_arr[:, :n_to_process],
                     cache=prompt_cache,
                     **model_kwargs,
@@ -5452,10 +5453,11 @@ class Scheduler:
                 self.model,
                 getattr(state.request, "rope_deltas", 0.0),
             )
+            prefill_model = getattr(self.model, "_omlx_prefill", self.model)
             if self._supports_skip_lm_head():
-                self.model(chunk, cache=state.cache, skip_lm_head=True)
+                prefill_model(chunk, cache=state.cache, skip_lm_head=True)
             else:
-                self.model(chunk, cache=state.cache)
+                prefill_model(chunk, cache=state.cache)
             mx.eval([c.state for c in state.cache])
         _trace_model_ms = (time.perf_counter() - _trace_model_start) * 1000.0
         _throttle_post = get_phys_footprint()
@@ -6108,7 +6110,11 @@ class Scheduler:
                 or self._get_output_parser_thinking_end_text() is not None
             )
         ):
-            think_end_ids = self._resolve_think_end_token_ids()
+            request_think_end_id = getattr(request, "think_end_token_id", None)
+            if request_think_end_id is not None:
+                think_end_ids = [request_think_end_id]
+            else:
+                think_end_ids = self._resolve_think_end_token_ids()
             if think_end_ids:
                 from .api.thinking import ThinkingBudgetProcessor
 
@@ -6397,6 +6403,23 @@ class Scheduler:
         Returns False for disabled-thinking patterns like <think></think>
         where </think> immediately follows <think> in the prompt tail.
         """
+        factory = getattr(self, "_output_parser_factory", None)
+        if factory is not None and factory.kind == "k2_horizon":
+            pairs = {
+                self.tokenizer.convert_tokens_to_ids(start): (
+                    self.tokenizer.convert_tokens_to_ids(end)
+                )
+                for start, end in factory.thinking_marker_pairs
+            }
+            request.think_end_token_id = None
+            for token in reversed((request.prompt_token_ids or [])[-3:]):
+                if token in pairs.values():
+                    return False
+                if token in pairs:
+                    request.think_end_token_id = pairs[token]
+                    return True
+            return False
+
         think_start_ids = None
         think_start_id = self._get_think_token_id("think_start_id")
         if think_start_id is not None:
@@ -11370,6 +11393,7 @@ class Scheduler:
 
                 if parser_session is not None:
                     final_result = parser_session.finalize()
+                    output.error = getattr(final_result, "error", None)
                     if final_result.stream_text:
                         output.new_text += final_result.stream_text
                     if final_result.visible_text:
