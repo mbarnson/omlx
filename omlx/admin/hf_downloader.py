@@ -13,6 +13,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
@@ -1101,6 +1102,26 @@ class HFDownloader(_QueuePersistenceMixin):
 
         # Detect LoRA/adapter repos (adapter_config.json is peft standard)
         is_adapter = any(f["name"] == "adapter_config.json" for f in files)
+        is_uno_adapter = False
+        if (
+            is_adapter
+            and "uno" in re.split(r"[-_/]", repo_id.lower())
+            and any(f["name"] == "adapter_model.safetensors" for f in files)
+        ):
+            from ..uno_bundle import uno_adapter_base
+
+            config_path = await asyncio.wait_for(
+                asyncio.to_thread(
+                    hf_hub_download,
+                    repo_id=repo_id,
+                    filename="adapter_config.json",
+                    endpoint=endpoint,
+                ),
+                timeout=_HF_API_TIMEOUT,
+            )
+            is_uno_adapter = (
+                uno_adapter_base(json.loads(Path(config_path).read_text())) is not None
+            )
 
         # Params from the dtype histogram (logical count). Size from current
         # revision blob bytes — U32 packed quants are not 4 bytes/param (#3401).
@@ -1157,6 +1178,7 @@ class HFDownloader(_QueuePersistenceMixin):
                 info.last_modified.isoformat() if info.last_modified else ""
             ),
             "is_adapter": is_adapter,
+            "is_uno_adapter": is_uno_adapter,
         }
 
     def __init__(

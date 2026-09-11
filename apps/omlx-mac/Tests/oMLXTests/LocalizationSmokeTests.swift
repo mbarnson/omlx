@@ -74,7 +74,8 @@ final class LocalizationSmokeTests: XCTestCase {
         // Settings + helpers
         "settings.section.basic", "settings.advanced.experimental.section",
         "settings.actions.reset", "settings.apply.choose.group_pp",
-        "settings.uno.enable", "settings.uno.adapter", "settings.uno.conflict",
+        "settings.uno.apply", "settings.uno.get_adapter", "settings.uno.grammar",
+        "settings.uno.global", "settings.uno.off",
         "appearance.row.menubar_icon", "appearance.row.menubar_icon.restore",
         // Menubar + updates
         "menubar.item.quit", "menubar.stats.session_section",
