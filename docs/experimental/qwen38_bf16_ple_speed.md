@@ -39,6 +39,12 @@ maintenance cost.
 
 ## Measurements and their limits
 
+Build provenance correction from the next revision: these early runs imported
+the isolated source worktree without its optional compiled extensions. They
+compare variants within that build, but do not represent the user's usual
+`OMLX_WITH_CUSTOM_KERNEL=1` installation. The subsequent runtime-control search
+builds the extensions and establishes a new baseline before tuning them.
+
 The fixed aggressive checkpoint has Q2 experts, Q4 dense/MTP matrices, four
 selected experts, Q8 HC injection, BF16 routers and original BF16 PLE on SSD.
 All measurements below included the same previously validated GDN overlay,
