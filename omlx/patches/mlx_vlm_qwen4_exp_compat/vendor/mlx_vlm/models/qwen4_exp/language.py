@@ -2059,8 +2059,9 @@ class _SafeTensorMMap:
     @staticmethod
     def to_mx(copied: np.ndarray, dtype: str) -> mx.array:
         if dtype == "BF16":
-            values = (copied.astype(np.uint32) << np.uint32(16)).view(np.float32)
-            return mx.array(values).astype(mx.bfloat16)
+            # The host buffer already contains BF16 bits. Preserve them directly
+            # instead of expanding to FP32 and scheduling a cast back to BF16.
+            return mx.array(copied).view(mx.bfloat16)
         if dtype == "F8_E4M3":
             return mx.from_fp8(mx.array(copied), dtype=mx.bfloat16)
         return mx.array(copied)

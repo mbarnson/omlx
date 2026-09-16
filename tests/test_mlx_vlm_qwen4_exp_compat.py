@@ -1276,6 +1276,18 @@ def disk_ple_reader(tmp_path):
         reader.close()
 
 
+def test_disk_backed_ple_upload_preserves_all_bf16_bit_patterns():
+    import numpy as np
+
+    compat.apply_mlx_vlm_qwen4_exp_compat_patch()
+    from mlx_vlm.models.qwen4_exp.language import _SafeTensorMMap
+
+    raw = np.arange(65536, dtype=np.uint16).reshape(256, 256)
+    values = _SafeTensorMMap.to_mx(raw, "BF16")
+    assert values.dtype == mx.bfloat16
+    np.testing.assert_array_equal(np.array(values.view(mx.uint16)), raw)
+
+
 @pytest.mark.parametrize("short_reads", [False, True])
 def test_disk_backed_ple_page_prefetch_returns_identical_rows(
     disk_ple_reader, monkeypatch, short_reads
