@@ -136,15 +136,20 @@ class YarnRoPE(nn.Module):
         freq = args.rope_theta ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims)
         self._inv_freq = ramp / (params["factor"] * freq) + (1 - ramp) / freq
 
-    def __call__(self, x, offset=0):
-        positions = (
-            mx.arange(x.shape[-2], dtype=mx.float32) + mx.array(offset)[..., None]
-        )
+    def table(self, offset, length, dtype):
+        """The scaled cos/sin for `length` positions from `offset`, rounded to `dtype`.
+
+        Computed outside compilation (to preserve BF16 rounding) and shareable by every layer of a step."""
+        positions = mx.arange(length, dtype=mx.float32) + mx.array(offset)[..., None]
         angles = positions[..., None] * self._inv_freq
-        cos = (mx.cos(angles) * self.attention_factor).astype(x.dtype)
-        sin = (mx.sin(angles) * self.attention_factor).astype(x.dtype)
-        # Keep trigonometry outside compilation to preserve BF16 rounding.
-        return _yarn_rotation(self.dims)(x, cos, sin)
+        cos = (mx.cos(angles) * self.attention_factor).astype(dtype)
+        sin = (mx.sin(angles) * self.attention_factor).astype(dtype)
+        return cos, sin
+
+    def __call__(self, x, offset=0, table=None):
+        if table is None:
+            table = self.table(offset, x.shape[-2], x.dtype)
+        return _yarn_rotation(self.dims)(x, *table)
 
 
 @lru_cache(None)
@@ -306,8 +311,10 @@ class Attention(nn.Module):
         routed = nn.silu(routed) * weights.astype(routed.dtype)[..., None]
         return routed.sum(axis=-2)
 
-    def project(self, x: mx.array, offset=0, lora_mask=None):
-        """Pure projection/RoPE region shared by ordinary and compiled execution."""
+    def project(self, x: mx.array, offset=0, lora_mask=None, rope_table=None):
+        """Pure projection/RoPE region shared by ordinary and compiled execution.
+
+        rope_table: YaRN (cos, sin) precomputed for this step (see YarnRoPE.table), shared by all layers."""
         batch, length, _ = x.shape
         queries = (
             _project(self.q_proj, x, lora_mask)
@@ -325,6 +332,15 @@ class Attention(nn.Module):
             .transpose(0, 2, 1, 3)
         )
 
+        if rope_table is not None:
+            return (
+                self.rope(queries, table=rope_table),
+                self.rope(keys, table=rope_table),
+                values,
+            )
+        if isinstance(self.rope, YarnRoPE):   # one table for queries and keys
+            table = self.rope.table(offset, length, queries.dtype)
+            return self.rope(queries, table=table), self.rope(keys, table=table), values
         return self.rope(queries, offset=offset), self.rope(keys, offset=offset), values
 
     def project_output(self, output, x, lora_mask=None):

@@ -5,12 +5,18 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
 
+from .k2_horizon_model import YarnRoPE
+
 
 def make_regions(layer):
     attention = layer.self_attn
 
     def pre(x, offset, mask):
         return attention.project(layer.input_layernorm(x), offset, mask)
+
+    def pre_yarn(x, cos, sin, mask):
+        # YaRN: the step's cos/sin table is an input (computed once, outside compilation, for all layers)
+        return attention.project(layer.input_layernorm(x), 0, mask, (cos, sin))
 
     def prefix(x, out, mask):
         return layer.residual(x, attention.project_output(out, x, mask))
@@ -25,7 +31,7 @@ def make_regions(layer):
             if conditional
             else (lambda *args, fn=fn: fn(*args, None))
         )
-        for kind, fn in (("pre", pre), ("post", post), ("prefix", prefix))
+        for kind, fn in (("pre", pre), ("pre_yarn", pre_yarn), ("post", post), ("prefix", prefix))
         for conditional in (False, True)
         if kind != "prefix" or not conditional
     }
@@ -53,13 +59,18 @@ class CompiledBody(nn.Module):
         if len(cache) != len(self.layers) or any(v != positions[0] for v in positions):
             raise ValueError("Compiled K2 requires aligned layer cache offsets")
         mask = create_attention_mask(h, cache[0])
+        rope = self.layers[0].self_attn.rope
+        table = rope.table(offsets[0], h.shape[1], h.dtype) if isinstance(rope, YarnRoPE) else None
         conditional = lora_mask is not None
         extra = (lora_mask,) if conditional else ()
         for index, (layer, c, regions) in enumerate(
             zip(self.layers, cache, self._regions)
         ):
             offset = mx.array(offsets[index], dtype=mx.int32)
-            q, k, v = regions["pre", conditional](h, offset, *extra)
+            if table is not None:
+                q, k, v = regions["pre_yarn", conditional](h, *table, *extra)
+            else:
+                q, k, v = regions["pre", conditional](h, offset, *extra)
             if c is not None:
                 k, v = c.update_and_fetch(k, v)
             out = scaled_dot_product_attention(
@@ -78,7 +89,7 @@ def can_compile_blocks(model):
     return (
         not args.num_experts
         and args.attention_gate_func is None
-        and args.rope_parameters.get("rope_type", "default") == "default"
+        and args.rope_parameters.get("rope_type", "default") in ("default", "yarn")
         and args.rope_head_dim == args.head_dim
     )
 
@@ -86,16 +97,16 @@ def can_compile_blocks(model):
 def install_compiled_blocks(model):
     args = model.args
     if (
-        args.rope_parameters.get("rope_type", "default") != "default"
+        args.rope_parameters.get("rope_type", "default") not in ("default", "yarn")
         or args.rope_head_dim != args.head_dim
     ):
-        raise ValueError("Compiled K2 requires full-head default RoPE")
+        raise ValueError("Compiled K2 requires full-head default or YaRN RoPE")
     for layer in model.layers:
         attn = layer.self_attn
         if (
             attn.mova
             or "gate_proj" in attn
-            or not isinstance(attn.rope, nn.RoPE)
+            or not isinstance(attn.rope, (nn.RoPE, YarnRoPE))
             or not hasattr(layer.mlp, "gate_proj")
         ):
             raise ValueError("Compiled K2 requires dense ungated layers")
