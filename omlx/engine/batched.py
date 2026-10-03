@@ -280,6 +280,21 @@ class BatchedEngine(BaseEngine):
 
     async def _prepare_loaded_model(self) -> None:
         """Prepare loaded weights before post-load transforms."""
+        # K2 Horizon (plain decoding): compiled dense layer regions, as the Uno engine installs after its adapter.
+        # OMLX_K2_COMPILE=0 opts out.
+        import asyncio
+        import os
+
+        if self.model_type == "k2_horizon" and os.environ.get("OMLX_K2_COMPILE", "1") != "0":
+            from ..engine_core import get_mlx_executor
+            from ..patches.k2_horizon.compiled import can_compile_blocks, install_compiled_blocks
+
+            def _compile():
+                if can_compile_blocks(self._model) and not getattr(self._model, "_omlx_k2_compiled", False):
+                    install_compiled_blocks(self._model)
+                    self._model._omlx_k2_compiled = True
+
+            await asyncio.get_running_loop().run_in_executor(get_mlx_executor(), _compile)
 
     def _validate_request(self, prompt=None, **options) -> None:
         """Validate engine-specific options before request admission."""
