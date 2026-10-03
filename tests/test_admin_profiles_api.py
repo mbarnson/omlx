@@ -335,7 +335,9 @@ class TestProfileRoutes:
         assert settings["active_profile_name"] == "penalty"
         assert mgr.get_settings("model-a").vlm_mtp_enabled is False
 
-    def test_apply_profile_validation_error_is_400_without_partial_write(self, client):
+    def test_conflicting_profile_is_400_without_partial_write(self, client):
+        # Profile saves validate the effective base-plus-profile settings, so the
+        # conflict is rejected before a profile exists that apply could fail on.
         c, mgr = client
         mgr.set_settings(
             "model-a",
@@ -344,7 +346,7 @@ class TestProfileRoutes:
                 vlm_mtp_draft_model="qwen-mtp-drafter",
             ),
         )
-        c.post(
+        r = c.post(
             "/admin/api/models/model-a/profiles",
             json={
                 "name": "dflash",
@@ -353,10 +355,11 @@ class TestProfileRoutes:
             },
         )
 
-        r = c.post("/admin/api/models/model-a/profiles/dflash/apply")
-
         assert r.status_code == 400
         assert "vlm_mtp_enabled and dflash_enabled" in r.json()["detail"]
+        assert mgr.list_profiles("model-a") == []
+        r = c.post("/admin/api/models/model-a/profiles/dflash/apply")
+        assert r.status_code == 404
         persisted = mgr.get_settings("model-a")
         assert persisted.vlm_mtp_enabled is True
         assert persisted.dflash_enabled is False

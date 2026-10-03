@@ -11,6 +11,7 @@ import pytest
 
 from omlx.patches.k2_horizon import quantized
 from omlx.patches.k2_horizon.uno_adapter import TARGETS, ConditionalLoRALinear
+from tests.k2_kv import committed_kv
 
 
 def qlinear(k=4096, n=1024, *, bits=8, group=64, dtype=mx.bfloat16):
@@ -249,14 +250,14 @@ def test_q8_block_preserves_full_model_logits_and_kv(compiled):
             )
             mx.eval(result, [c.state for c in cache])
             if not enabled:
-                before.append((result, [c.state for c in cache]))
+                before.append((result, [committed_kv(c) for c in cache]))
             else:
                 assert mx.array_equal(result, before[index][0]).item()
                 for current, saved in zip(cache, before[index][1]):
                     assert current.offset == 11
                     assert all(
                         mx.array_equal(a, b).item()
-                        for a, b in zip(current.state, saved)
+                        for a, b in zip(committed_kv(current), saved)
                     )
             for c in cache:
                 c.trim(8)

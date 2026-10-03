@@ -11,6 +11,7 @@ from omlx._torch_stub import install
 from omlx.exceptions import InvalidRequestError
 from omlx.patches.k2_horizon.tool_grammar import UnoToolConstraint, compile_tool_grammar
 from omlx.patches.k2_horizon.uno_decode import acceptance_and_residual
+from tests.k2_kv import committed_kv
 
 install()
 xgr = pytest.importorskip("xgrammar")
@@ -207,7 +208,7 @@ def test_uno_commits_constrained_tokens_and_keeps_kv(compiler, temperature, bloc
     )
     cycles = list(run_uno_cycles(decoder, [10, 11], 10))
     assert [token for cycle in cycles for token in cycle.tokens] == [97, 98, 99, STOP]
-    assert model.cache[0].state[0][0, 0, :, 0].tolist() == [10, 11, 97, 98, 99]
+    assert committed_kv(model.cache[0])[0][0, 0, :, 0].tolist() == [10, 11, 97, 98, 99]
 
 
 def test_partial_tool_prefix_is_explicitly_rejected():

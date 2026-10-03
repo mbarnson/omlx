@@ -17,6 +17,7 @@ from omlx.patches.k2_horizon.k2_horizon_model import Model, ModelArgs
 from omlx.patches.k2_horizon.uno_adapter import ConditionalLoRALinear, TARGETS
 from omlx.patches.k2_horizon.uno_decode import UnoDecoder
 from test_k2_horizon import small_config
+from tests.k2_kv import clone_cache, committed_kv
 
 
 def make_model():
@@ -51,7 +52,7 @@ def test_compiled_cache_rollback_and_path_alternation(conditional):
     cache = make_prompt_cache(model)
     model(mx.array([[2, 3, 5, 7]]), cache=cache)
     mx.eval([c.state for c in cache])
-    clone = lambda: [type(c).from_state(c.state, c.meta_state) for c in cache]
+    clone = lambda: clone_cache(cache)
     ids = mx.array([[11, 13, 17]])
     mask = mx.array([[0.0, 1.0, 1.0]]) if conditional else None
     rc = clone()
@@ -65,7 +66,7 @@ def test_compiled_cache_rollback_and_path_alternation(conditional):
     close(expected, actual)
     for r, c in zip(rc, ac):
         assert r.offset == c.offset == 7
-        for a, b in zip(r.state, c.state):
+        for a, b in zip(committed_kv(r), committed_kv(c)):
             close(a, b)
         c.trim(3)
     assert mx.array_equal(actual, model(ids, cache=ac, lora_mask=mask)).item()
@@ -314,7 +315,7 @@ def test_ane_near_full_tail_preserves_cache_and_decode(compiled, rows, tiles):
         close(expected, actual)
         assert all(c.offset == rows + 1 for c in cache)
         for actual_cache, ref_cache in zip(cache, reference_cache):
-            for a, b in zip(actual_cache.state, ref_cache.state):
+            for a, b in zip(committed_kv(actual_cache), committed_kv(ref_cache)):
                 close(b, a)
             actual_cache.trim(1)
         repeated = model(mx.array([[43]]), cache=cache)
@@ -387,7 +388,7 @@ def test_mova_scheduler_prefill_and_restored_cache(mock_tokenizer, chunked, pref
         cache = make_prompt_cache(model)
         model(mx.array([prompt[:prefix]]), cache=cache)
         mx.eval([c.state for c in cache])
-        cache = [type(c).from_state(c.state, c.meta_state) for c in cache]
+        cache = clone_cache(cache)
     scheduler.requests[request.request_id] = request
     fast.qwen35_ane_profile_set_enabled(True)
     fast.qwen35_ane_profile_reset()
@@ -474,7 +475,7 @@ def test_ane_prefill_preserves_eight_decode_rows_and_cache_after_removal(
         cache = make_prompt_cache(model)
         if prefix:
             model._omlx_prefill(mx.array([prompt[:prefix]]), cache=cache)
-            cache = [type(c).from_state(c.state, c.meta_state) for c in cache]
+            cache = clone_cache(cache)
         request = Request(
             request_id=str(index), prompt=prompt, sampling_params=SamplingParams()
         )

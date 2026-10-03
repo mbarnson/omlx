@@ -12,6 +12,7 @@ from omlx.patches.k2_horizon import apply_k2_horizon_patch
 from omlx.patches.k2_horizon.k2_horizon_model import GroupedRMSNorm, Model, ModelArgs
 from omlx.patches.k2_horizon.uno_adapter import ConditionalLoRALinear
 from omlx.patches.k2_horizon.uno_decode import UnoDecoder, acceptance_and_residual
+from tests.k2_kv import committed_kv
 
 
 def small_config(**overrides):
@@ -236,7 +237,7 @@ def test_each_rejection_frontier_and_all_accepted_preserve_real_kv(reject_at):
     assert list(cycle.tokens) == expected
     assert cycle.accepted_proposals == (7 if reject_at is None else reject_at)
     assert all(c.offset == 3 + len(expected) - 1 for c in cache)
-    keys = model.cache[0].state[0]
+    keys = committed_kv(model.cache[0])[0]
     assert keys[0, 0, :, 0].tolist() == [2, 3, 4] + expected[:-1]
 
 
@@ -267,7 +268,7 @@ def test_eos_at_every_committed_slot_excludes_later_draft_tokens(eos_slot):
     assert len(cycles) == 1
     assert list(cycles[0].tokens) == list(range(10, 11 + eos_slot))
     assert cycles[0].accepted_proposals == min(7, eos_slot)
-    assert model.cache[0].state[0][0, 0, :, 0].tolist() == [2, 3, 4] + list(
+    assert committed_kv(model.cache[0])[0][0, 0, :, 0].tolist() == [2, 3, 4] + list(
         range(10, 10 + eos_slot)
     )
 
@@ -432,5 +433,5 @@ def test_uno_restored_prefix_preserves_only_verified_kv(reject_at):
     decoder = UnoDecoder(model, eos_token_ids=[], block_size=8, temperature=0)
     cycles = list(run_uno_cycles(decoder, prompt, 9, cache))
     emitted = [token for cycle in cycles for token in cycle.tokens]
-    assert cache[0].state[0][0, 0, :, 0].tolist() == prompt + emitted[:-1]
+    assert committed_kv(cache[0])[0][0, 0, :, 0].tolist() == prompt + emitted[:-1]
     assert cache[0].offset == len(prompt) + len(emitted) - 1
