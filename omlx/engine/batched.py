@@ -278,6 +278,27 @@ class BatchedEngine(BaseEngine):
             return extract_k2_horizon_messages(messages)
         return messages
 
+    async def _prepare_loaded_model(self) -> None:
+        """Prepare loaded weights before post-load transforms."""
+        # K2 Horizon (plain decoding): compiled dense layer regions, as the Uno engine installs after its adapter.
+        # OMLX_K2_COMPILE=0 opts out.
+        import asyncio
+        import os
+
+        if self.model_type == "k2_horizon" and os.environ.get("OMLX_K2_COMPILE", "1") != "0":
+            from ..engine_core import get_mlx_executor
+            from ..patches.k2_horizon.compiled import can_compile_blocks, install_compiled_blocks
+
+            def _compile():
+                if can_compile_blocks(self._model) and not getattr(self._model, "_omlx_k2_compiled", False):
+                    install_compiled_blocks(self._model)
+                    self._model._omlx_k2_compiled = True
+
+            await asyncio.get_running_loop().run_in_executor(get_mlx_executor(), _compile)
+
+    def _validate_request(self, prompt=None, **options) -> None:
+        """Validate engine-specific options before request admission."""
+
     async def start(self) -> None:
         """Start the engine (load model if not loaded)."""
         if self._loaded:
@@ -338,6 +359,8 @@ class BatchedEngine(BaseEngine):
         self._model, self._tokenizer = await loop.run_in_executor(
             get_mlx_executor(), _load_model_sync
         )
+
+        await self._prepare_loaded_model()
 
         # Apply post-load transforms (e.g., IndexCache for DSA models)
         from ..utils.model_loading import (
@@ -693,6 +716,8 @@ class BatchedEngine(BaseEngine):
             else SchedulerConfig()
         )
         signature = getattr(self._model, "_omlx_k2_ane_signature", None)
+        if not signature and getattr(self._model, "_omlx_k2_compiled", False):
+            signature = "k2-compiled-v1"
         if signature:
             scheduler_config.model_name = (
                 (scheduler_config.model_name or self._model_name) + ":" + signature
@@ -1063,6 +1088,18 @@ class BatchedEngine(BaseEngine):
         from ..request import SamplingParams
 
         self._prepare_k2_tool_grammar(kwargs.get("tools"), kwargs)
+        self._validate_request(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            stop=stop,
+            **kwargs,
+        )
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
@@ -1143,6 +1180,18 @@ class BatchedEngine(BaseEngine):
         from ..request import SamplingParams
 
         self._prepare_k2_tool_grammar(kwargs.get("tools"), kwargs)
+        self._validate_request(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            stop=stop,
+            **kwargs,
+        )
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
@@ -1343,6 +1392,7 @@ class BatchedEngine(BaseEngine):
             chat_template_kwargs=ct_kwargs,
             is_partial=partial,
         )
+        self._validate_request(prompt, tools=tools, **kwargs)
         # Tokenizer errors (UnicodeDecodeError, HF Rust "Already borrowed",
         # malformed input) are normally surfaced by the real chat path's
         # add_request → tokenize call as a 500 — there's no path-specific
@@ -1381,6 +1431,7 @@ class BatchedEngine(BaseEngine):
         """
         if not self._loaded:
             await self.start()
+        self._validate_request(prompt, **kwargs)
         try:
             num_tokens = len(self._tokenizer.encode(prompt))
         except Exception as e:

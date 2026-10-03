@@ -55,7 +55,7 @@ final class ModelSettingsScreenVM {
         case dflashVerifyMode, dflashDraftWindowSize, dflashDraftSinkSize, dflashBlockSize
         case dflashInMemoryCache, dflashInMemoryCacheGib, dflashInMemoryCacheMaxEntries
         case dflashSsdCache, dflashSsdCacheGib
-        case mtpEnabled, mtpAdaptiveMaxDepth
+        case mtpEnabled, mtpAdaptiveMaxDepth, unoAdapterModel
         case vlmMtpEnabled, vlmMtpDraftModel, vlmMtpDraftBlockSize
     }
 
@@ -352,6 +352,10 @@ final class ModelSettingsScreenVM {
     var dflashSsdCache: Bool = false
     var dflashSsdCacheGib: String = "20"
 
+    var unoAdapterModel: String = ""
+    var unoEnabled: Bool { !unoAdapterModel.isEmpty }
+    var guidedGrammarEnabled: Bool = false
+
     // Experimental: native MTP
     var mtpEnabled: Bool = false
     /// Empty = adaptive depth.
@@ -434,6 +438,74 @@ final class ModelSettingsScreenVM {
         model?.reasoningEffortOptions ?? []
     }
 
+    var unoAdapterCandidates: [ModelDTO] {
+        let ids = model?.unoAdapters ?? []
+        return allModels.filter { ids.contains($0.id) }
+    }
+
+    func unoAdapterModelOptions() -> [(String, String)] {
+        [("", String(localized: "settings.uno.off", defaultValue: "Off"))]
+            + unoAdapterCandidates.map { ($0.id, $0.displayName ?? $0.id) }
+    }
+
+    var thinkingBudgetAvailable: Bool {
+        !unoEnabled
+    }
+
+    var unoConflicts: [(key: String, value: Double, required: Double, inherited: Bool)] {
+        let settings = currentSettingsDict()
+        return (model?.unoRequiredSettings ?? [:]).sorted { $0.key < $1.key }.compactMap { key, neutral in
+            let number = settings[key]?.value as? NSNumber
+            let value = number?.doubleValue ?? (key == "repetition_penalty" ? serverDefaultSampling?.repetitionPenalty ?? neutral : neutral)
+            return value == neutral ? nil : (key, value, neutral, number == nil)
+        }
+    }
+
+    var unoConflictReason: String? {
+        let labels = [
+            "min_p": String(localized: "settings.basic.min_p.label", defaultValue: "Min P"),
+            "repetition_penalty": String(localized: "settings.basic.repetition_penalty.label", defaultValue: "Repetition Penalty"),
+            "presence_penalty": String(localized: "settings.basic.presence_penalty.label", defaultValue: "Presence Penalty"),
+            "thinking_budget_enabled": String(localized: "settings.advanced.thinking_budget.label", defaultValue: "Thinking Budget"),
+            "guided_grammar_enabled": String(localized: "settings.uno.grammar", defaultValue: "Guided Grammar"),
+            "turboquant_kv_enabled": "TurboQuant KV", "mtp_enabled": "MTP", "vlm_mtp_enabled": "VLM MTP",
+            "dflash_enabled": "DFlash", "specprefill_enabled": "SpecPrefill",
+        ]
+        let conflicts = unoConflicts.map { key, value, required, inherited in
+            let source = inherited ? " (\(String(localized: "settings.uno.global", defaultValue: "Global")))" : ""
+            let target = key.hasSuffix("_enabled") ? String(localized: "settings.uno.off", defaultValue: "Off") : required.formatted()
+            return "\(labels[key] ?? key): \(value.formatted())\(source) → \(target)"
+        }
+        return conflicts.isEmpty ? nil : conflicts.joined(separator: "; ")
+    }
+
+    func applyUnoSettings() {
+        mtpEnabled = false
+        vlmMtpEnabled = false
+        dflashEnabled = false
+        specprefillEnabled = false
+        turboquantKvEnabled = false
+        guidedGrammarEnabled = false
+        thinkingBudgetEnabled = false
+        minP = "0"
+        presencePenalty = "0"
+        repetitionPenalty = "1"
+        markProfileDirty()
+    }
+
+    func validateUnoWorkingSettings() -> Bool {
+        guard unoEnabled else { return true }
+        if let reason = unoConflictReason {
+            lastError = reason
+            return false
+        }
+        guard unoAdapterCandidates.contains(where: { $0.id == unoAdapterModel }) else {
+            lastError = String(localized: "settings.uno.select", defaultValue: "Select a Uno adapter")
+            return false
+        }
+        return true
+    }
+
     var isQwen4Exp: Bool {
         (model?.configModelType ?? "")
             .lowercased()
@@ -490,7 +562,7 @@ final class ModelSettingsScreenVM {
             return true
         case .dflashSsdCache, .dflashSsdCacheGib:
             return true
-        case .mtpEnabled, .mtpAdaptiveMaxDepth, .vlmMtpEnabled, .vlmMtpDraftModel:
+        case .mtpEnabled, .mtpAdaptiveMaxDepth, .unoAdapterModel, .vlmMtpEnabled, .vlmMtpDraftModel:
             return true
         case .vlmMtpDraftBlockSize:
             return true
@@ -655,6 +727,8 @@ final class ModelSettingsScreenVM {
                 self.dflashSsdCache = s?.dflashSsdCache ?? false
                 self.dflashSsdCacheGib = DflashByteSize.bytesToGib(s?.dflashSsdCacheMaxBytes)
                     .map(String.init) ?? "20"
+                self.unoAdapterModel = s?.unoEnabled == true ? s?.unoAdapterModel ?? "" : ""
+                self.guidedGrammarEnabled = s?.guidedGrammarEnabled ?? false
                 self.mtpEnabled = s?.mtpEnabled ?? false
                 self.mtpAdaptiveMaxDepth = s?.mtpAdaptiveMaxDepth.flatMap { (3...6).contains($0) ? String($0) : nil } ?? "3"
                 self.vlmMtpEnabled = s?.vlmMtpEnabled ?? false
@@ -892,6 +966,11 @@ final class ModelSettingsScreenVM {
             patch.mtpEnabled = mtpEnabled
             patch.mtpAdaptiveMaxDepth = Int(mtpAdaptiveMaxDepth) ?? 3
             patch.mtpFixedDepth = .some(nil)
+        case .unoAdapterModel:
+            guard model?.unoCompatible == true, validateUnoWorkingSettings() else { return }
+            patch.unoEnabled = unoEnabled
+            patch.unoAdapterModel = unoAdapterModel
+            patch.guidedGrammarEnabled = guidedGrammarEnabled
         case .vlmMtpEnabled:           patch.vlmMtpEnabled = vlmMtpEnabled
         case .vlmMtpDraftModel:        patch.vlmMtpDraftModel = vlmMtpDraftModel.isEmpty ? nil : vlmMtpDraftModel
         case .vlmMtpDraftBlockSize:    patch.vlmMtpDraftBlockSize = Int(vlmMtpDraftBlockSize)
@@ -1342,6 +1421,11 @@ final class ModelSettingsScreenVM {
                     out[ProfileSettingsKey.dflashSsdCacheMaxBytes] = AnyCodable(Int(bytes))
                 }
             }
+            if model?.unoCompatible == true {
+                putBool(ProfileSettingsKey.unoEnabled, unoEnabled)
+                putString(ProfileSettingsKey.unoAdapterModel, unoAdapterModel)
+                putBool("guided_grammar_enabled", guidedGrammarEnabled)
+            }
             putBool(ProfileSettingsKey.mtpEnabled, mtpEnabled)
             if mtpEnabled {
                 putInt(ProfileSettingsKey.mtpAdaptiveMaxDepth, mtpAdaptiveMaxDepth)
@@ -1550,7 +1634,7 @@ final class ModelSettingsScreenVM {
         let displayName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanName = "p-" + UUID().uuidString.lowercased().prefix(28)
         guard !displayName.isEmpty, scope != .preset else { return }
-        guard validateAneWorkingSettings() else { return }
+        guard validateUnoWorkingSettings(), validateAneWorkingSettings() else { return }
         let settings = currentSettingsDict()
         do {
             switch scope {
@@ -1594,7 +1678,7 @@ final class ModelSettingsScreenVM {
     func updateProfileWithWorking(scope: ProfileScope, name: String, client: OMLXClient) async {
         let targetModelID = modelID
         guard scope != .preset else { return }
-        guard validateAneWorkingSettings() else { return }
+        guard validateUnoWorkingSettings(), validateAneWorkingSettings() else { return }
         let settings = currentSettingsDict()
         do {
             switch scope {

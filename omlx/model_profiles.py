@@ -87,6 +87,8 @@ MODEL_SPECIFIC_PROFILE_FIELDS = (
     "mtp_adaptive_max_depth",
     "mtp_fixed_depth",
     "vlm_mtp_enabled",
+    "uno_enabled",
+    "uno_adapter_model",
     "vlm_mtp_draft_model",
     "vlm_mtp_draft_block_size",
     "specprefill_enabled",
