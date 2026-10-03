@@ -558,3 +558,66 @@ def test_planar_transfer_preserves_outputs_from_lazy_inputs_on_multiple_streams(
     mx.eval(expected, actual)
     for reference, result in zip(expected, actual):
         close(reference, result)
+
+
+def make_yarn_model():
+    config = small_config(head_dim=128)
+    config["rope_parameters"] = dict(
+        rope_type="yarn",
+        rope_theta=10000,
+        factor=4,
+        original_max_position_embeddings=128,
+        beta_fast=32,
+        beta_slow=1,
+        attention_factor=1.1,
+    )
+    mx.random.seed(223)
+    model = Model(ModelArgs.from_dict(config))
+    model.set_dtype(mx.bfloat16)
+    for layer in model.layers:
+        for scope, names in TARGETS.items():
+            owner = getattr(layer, scope)
+            for name in names:
+                linear = getattr(owner, name)
+                n, k = linear.weight.shape
+                a = (mx.random.normal((4, k)) * 0.02).astype(mx.bfloat16)
+                b = (mx.random.normal((n, 4)) * 0.02).astype(mx.bfloat16)
+                setattr(owner, name, ConditionalLoRALinear(linear, a, b, 2.0))
+    model._uno_adapter_loaded = True
+    mx.eval(model.parameters())
+    return model
+
+
+@pytest.mark.parametrize("conditional", [False, True])
+def test_compiled_yarn_matches_uncompiled(conditional):
+    from omlx.patches.k2_horizon.compiled import can_compile_blocks
+
+    model = make_yarn_model()
+    assert can_compile_blocks(model)
+    prompt = mx.array([[2, 3, 5, 7, 11, 13]])
+    steps = [mx.array([[17, 19, 23]]), mx.array([[29]]), mx.array([[31]])]
+    mask = mx.array([[0.0, 1.0, 1.0]]) if conditional else None
+
+    def run():
+        cache = make_prompt_cache(model)
+        outs = [model(prompt, cache=cache)]
+        for ids in steps:
+            outs.append(model(ids, cache=cache, lora_mask=mask if ids.shape[1] == 3 else None))
+        mx.eval(outs)
+        return outs
+
+    expected = run()
+    install_compiled_blocks(model)
+    actual = run()
+    for e, a in zip(expected, actual):
+        close(e, a)
+        assert mx.array_equal(mx.argmax(e, axis=-1), mx.argmax(a, axis=-1)).item()
+
+
+def test_can_compile_blocks_admits_full_head_yarn_only():
+    from omlx.patches.k2_horizon.compiled import can_compile_blocks
+
+    model = make_yarn_model()
+    assert can_compile_blocks(model)
+    model.args.rope_head_dim = 64
+    assert not can_compile_blocks(model)
