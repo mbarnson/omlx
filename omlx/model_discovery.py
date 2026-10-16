@@ -1013,7 +1013,7 @@ def _read_model_context_length(model_path: Path) -> int | None:
             if isinstance(value, int) and value > 0:
                 return value
 
-        for nest_key in ("text_config", "language_config"):
+        for nest_key in ("text_config", "language_config", "llm_config"):
             nested = model_config.get(nest_key)
             if isinstance(nested, dict):
                 for key in _CONTEXT_LENGTH_KEYS:
@@ -1611,6 +1611,17 @@ def _is_hf_cache_mlx_compatible(model_dir: Path, source_repo_id: str) -> bool:
         except (OSError, ValueError, TypeError, KeyError) as error:
             logger.debug("Invalid K2 cache checkpoint %s: %s", source_repo_id, error)
             return False
+    if isinstance(config, dict) and config.get("model_type") == "nemotron_h_omni":
+        from .patches import nemotron_bolt
+
+        if nemotron_bolt.is_supported_config(config):
+            # NVIDIA's ModelOpt mixed Bolt checkpoint loads as published.
+            try:
+                nemotron_bolt.checkpoint_files(model_dir)
+                return True
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                logger.debug("Incomplete Nemotron Bolt checkpoint %s: %s", source_repo_id, error)
+                return False
     if not list(model_dir.glob("model*.safetensors")):
         logger.debug(f"Skipping HF cache model without model*.safetensors: {source_repo_id}")
         return False

@@ -4329,6 +4329,16 @@ def _build_model_sanitizer(
 
                     apply_muse_spark_patch()
                     apply_mlx_vlm_muse_spark_compat_patch()
+                if model_type in (
+                    "nemotron_h_omni",
+                    "nemotron_h_nano_omni",
+                    "nemotronh_nano_omni_reasoning_v3",
+                ):
+                    from omlx.patches.mlx_vlm_nemotron_omni_compat import (
+                        apply_mlx_vlm_nemotron_omni_compat_patch,
+                    )
+
+                    apply_mlx_vlm_nemotron_omni_compat_patch()
                 if model_type == "glm5_next":
                     from omlx.patches.mlx_vlm_glm5_next_compat import (
                         apply_mlx_vlm_glm5_next_compat_patch,

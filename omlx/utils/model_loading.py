@@ -890,6 +890,21 @@ def maybe_apply_pre_load_patches(
             mtp_enabled=mtp_active,
         )
 
+    if for_vlm and model_type in (
+        "nemotron_h_omni",
+        "nemotron_h_nano_omni",
+        "nemotronh_nano_omni_reasoning_v3",
+    ):
+        from ..patches.mlx_vlm_nemotron_omni_compat import (
+            apply_mlx_vlm_nemotron_omni_compat_patch,
+        )
+
+        if apply_mlx_vlm_nemotron_omni_compat_patch():
+            logger.info(
+                "Nemotron Omni mlx-vlm compatibility patch applied for %s",
+                model_name,
+            )
+
     if for_vlm and model_type == "glm5_next":
         from ..patches.mlx_vlm_glm5_next_compat import (
             apply_mlx_vlm_glm5_next_compat_patch,
@@ -1350,6 +1365,8 @@ _DFLASH_BATCHED_MODEL_TYPES = {
         "gemma4",
         "gemma4_unified",
         "muse_glimmer",
+        "nemotron_h_omni",
+        "nemotron_h_nano_omni",
     ),
     "batched": (
         "qwen3_5",
@@ -1375,8 +1392,8 @@ def dflash_compatibility(
     if dflash_batched_supported(model_type, engine_type):
         return True, ""
     return False, (
-        "DFlash supports Qwen3, Qwen3.5/3.6, Laguna, MiMo V2, GLM-5.3, Gemma 4 and "
-        f"Muse Glimmer models (model_type='{model_type or ''}', "
+        "DFlash supports Qwen3, Qwen3.5/3.6, Laguna, MiMo V2, GLM-5.3, Gemma 4, "
+        f"Muse Glimmer and Nemotron Omni models (model_type='{model_type or ''}', "
         f"engine='{engine_type}')"
     )
 
@@ -1636,6 +1653,17 @@ def maybe_load_custom_quantization(
 
     if not quant_method:
         return None
+
+    if quant_method.lower() == "modelopt":
+        from ..patches import nemotron_bolt
+
+        if nemotron_bolt.is_supported_config(config):
+            if not is_vlm:
+                raise ValueError(
+                    "The Nemotron Bolt ModelOpt mixed checkpoint is a VLM; "
+                    "refusing the text-only fallback loader"
+                )
+            return nemotron_bolt.load(model_name)
 
     if quant_method.lower() == "compressed-tensors":
         from ..patches import qwen38_modelopt_mixed

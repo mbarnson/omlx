@@ -221,3 +221,32 @@ def select_sampled(selector, hidden, logits, anchors, samplers) -> list[tuple]:
         (mx.concatenate(tokens[index])[None].astype(mx.int32), accept[index])
         for index in range(batch)
     ]
+
+
+def select_lilicorr(model, hidden, logits, anchor_rows, samplers) -> list[tuple]:
+    """LiLiCorr: the greedy chain path over each slot's top-k candidates.
+
+    Every row proposes the greedy path (NVIDIA's serving rule). A sampled
+    row's q is the point mass on that path, which keeps rejection sampling
+    exact for any proposal.
+    """
+    tokens, candidates, picks = model.propose(hidden, logits, anchor_rows)
+    batch, length, vocab = logits.shape
+    k = candidates.shape[-1]
+    logq = None
+    out = []
+    for index, sampler in enumerate(samplers):
+        if sampler is None:
+            out.append((tokens[index : index + 1], []))
+            continue
+        if logq is None:
+            logq = mx.where(mx.arange(k) == picks[..., None], 0.0, -math.inf).astype(
+                mx.float32
+            )
+        out.append(
+            (
+                tokens[index : index + 1],
+                bg.SparseDraftQ(candidates[index], logq[index], vocab),
+            )
+        )
+    return out
