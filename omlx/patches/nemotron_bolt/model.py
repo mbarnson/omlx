@@ -1637,11 +1637,14 @@ def mmv(x, fmt, w, O, I, sc=None, bi=None, out_dtype=None, gscale=None):
 
     gscale (NVFP4's per-tensor scale): y = T(T(x W) * gscale), as NVFP4Linear rounds."""
     n = x.shape[0]
-    dummy = _CONST.get("mmv_dummy")
-    if dummy is None:
-        dummy = _CONST["mmv_dummy"] = mx.zeros((64,), mx.float32)  # small arrays become constant
-        _CONST["mmv_one"] = mx.ones((1,), mx.float32)
-        mx.eval(dummy, _CONST["mmv_one"])
+    consts = _CONST.get("mmv")
+    if consts is None:
+        # Built, then published as one entry: engines on other threads may
+        # call this at the same time.
+        consts = (mx.zeros((64,), mx.float32), mx.ones((1,), mx.float32))  # small arrays become constant
+        mx.eval(*consts)
+        consts = _CONST.setdefault("mmv", consts)
+    dummy, one = consts
     out_dtype = out_dtype or x.dtype
     sg, rb = MMV_CFG["SG"], MMV_CFG["RB"]
     tgs = (O + 8 * rb - 1) // (8 * rb)
@@ -1651,7 +1654,7 @@ def mmv(x, fmt, w, O, I, sc=None, bi=None, out_dtype=None, gscale=None):
     scaled = gscale is not None
     (y,) = _kernel("mmv")(
         inputs=[x, w, sc if sc is not None else dummy, bi if bi is not None else dummy,
-                gscale.reshape(1) if scaled else _CONST["mmv_one"]],
+                gscale.reshape(1) if scaled else one],
         template=[("OT", out_dtype if ks == 1 else mx.float32), ("RT", x.dtype if scaled else mx.float32),
                   ("FMT", MMV_FMT[fmt]), ("I", I), ("O", O), ("SG", sg), ("RB", rb), ("KS", ks), ("NT", n)],
         grid=(tgs * 32 * sg, ks, 1), threadgroup=(32 * sg, 1, 1),

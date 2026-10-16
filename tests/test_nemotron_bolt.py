@@ -296,6 +296,37 @@ def test_mmv_matches_dense_and_rows_are_independent(fmt):
     assert mx.array_equal(y3, y[:3]).item()
 
 
+
+def test_mmv_cold_concurrent_first_use(monkeypatch):
+    """Engines on separate threads may hit mmv's shared constants together."""
+    import threading
+
+    monkeypatch.setattr(bolt, "_CONST", {})
+    w = _bf16(16, 64, scale=0.1)
+    x = mx.ones((2, 64), mx.bfloat16)
+    mx.eval(w, x)
+    start, errors, outs = threading.Barrier(4), [], []
+
+    def run():
+        try:
+            with mx.stream(mx.new_stream(mx.gpu)):  # as each engine's worker has
+                start.wait()
+                y = bolt.mmv(x, "bf16", w, 16, 64, out_dtype=mx.float32)
+                mx.eval(y)
+            outs.append(y)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert all(mx.array_equal(y, outs[0]).item() for y in outs)
+    assert set(bolt._CONST) == {"mmv"}
+
+
 def test_decode_agrees_with_prompt_processing(language_model):
     lm = language_model
     ids = mx.array([[5, 17, 300, 41, 99, 7, 256, 11, 3, 480, 64, 128]])
