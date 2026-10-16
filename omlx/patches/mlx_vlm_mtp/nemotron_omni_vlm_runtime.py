@@ -41,6 +41,11 @@ def apply() -> bool:
 
     def call(self, inputs=None, cache=None, inputs_embeds=None, **kwargs):
         kwargs.pop("n_confirmed", None)  # rollback is after the fact
+        if "speculative_verify" in kwargs:
+            # mlx-vlm's own speculative helpers: keep their contract as is.
+            return original_call(
+                self, inputs, cache=cache, inputs_embeds=inputs_embeds, **kwargs
+            )
         return_hidden = kwargs.pop("return_hidden", False)
         requested = kwargs.pop("capture_layer_ids", None)
         if not return_hidden:

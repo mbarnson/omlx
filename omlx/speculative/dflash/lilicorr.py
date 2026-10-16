@@ -1,4 +1,32 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+#
+# The LiLiCorr head, its scoring and the greedy path are ported from NVIDIA
+# Model-Optimizer (modelopt/torch/speculative/plugins/modeling_lilicorr.py and
+# hf_lilicorr.py @ 6bf36980):
+#   SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES.
+#   Licensed under the Apache License, Version 2.0
+#   (http://www.apache.org/licenses/LICENSE-2.0).
+# Those files are in turn adapted from SpecForge
+# (https://github.com/sgl-project/SpecForge), Copyright (c) 2025 sgl-project,
+# under the MIT license:
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 """NVIDIA LiLiCorr block drafter (DFlash backbone plus a lattice reranker).
 
 LiLiCorr checkpoints (e.g. ``nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr``)
@@ -240,8 +268,8 @@ class LiLiCorrHead(nn.Module):
         self.in_head = nn.Linear(dims, config.lilicorr_factor_dim)
         self.anchor_out_head = nn.Linear(dims, config.lilicorr_factor_dim)
 
-    def attention_bias(self, topk):
-        slots = mx.repeat(mx.arange(self.slots), topk)
+    def attention_bias(self, topk, slots=None):
+        slots = mx.repeat(mx.arange(self.slots if slots is None else slots), topk)
         rel = slots[:, None] - slots[None, :] + self.block_size - 1
         bias = self.relative_slot_bias[:, rel]
         same = (slots[:, None] == slots[None, :]).astype(bias.dtype)
@@ -255,6 +283,11 @@ class LiLiCorrHead(nn.Module):
         projected target row before the block.
         """
         batch, slots, k = ids.shape
+        if slots > self.slots or k > self.topk:
+            raise ValueError(
+                f"LiLiCorr head trained for {self.slots} slots x {self.topk} candidates, "
+                f"got {slots} x {k}"
+            )
         dtype = pass_hidden.dtype
         tokens = self.token_proj(embed(ids).astype(dtype))
         passes = self.pass_hidden_proj(pass_hidden)[:, :, None, :]
@@ -265,9 +298,12 @@ class LiLiCorrHead(nn.Module):
             [lp, mx.exp(lp), lp - lp.max(axis=-1, keepdims=True), rank, top1], axis=-1
         ).astype(dtype)
         h = tokens + passes + self.feature_mlp(self.feature_norm(features))
-        h = h + self.slot_embedding[0].astype(dtype) + self.rank_embedding[0, :, :, :k].astype(dtype)
+        # A shorter block (dflash_block_size below the trained size) uses the
+        # first slots: positions 1.. of the block, as in training.
+        h = h + self.slot_embedding[0, :, :slots].astype(dtype)
+        h = h + self.rank_embedding[0, :, :, :k].astype(dtype)
         h = h.reshape(batch, slots * k, -1)
-        bias = self.attention_bias(k)
+        bias = self.attention_bias(k, slots)
         for layer in self.layers:
             h = layer(h, bias)
         h = self.output_norm(h).reshape(batch, slots, k, -1)

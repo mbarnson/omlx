@@ -6,11 +6,15 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import threading
 from pathlib import Path
 
 from . import is_supported_config, validate_layout
 
 logger = logging.getLogger(__name__)
+# Two Bolt loads must not stack their hooks (the inner one would restore the
+# outer one's functions as the originals).
+_HOOK_LOCK = threading.Lock()
 
 
 def load(model_name: str | Path):
@@ -36,25 +40,43 @@ def load(model_name: str | Path):
 
     from . import model as bolt_model
 
-    original_load_config = vlm_utils.load_config
-    original_get_model_and_args = vlm_utils.get_model_and_args
+    owner = threading.get_ident()
+    target = model_path.resolve()
+
+    def this_load(path) -> bool:
+        # Only this thread's load of this checkpoint: other loads (an oQ job,
+        # another model) may run while the hooks are installed.
+        if path is None or threading.get_ident() != owner:
+            return False
+        try:
+            return Path(path).resolve() == target
+        except (OSError, TypeError):
+            return False
 
     def load_config(path, *args, **kwargs):
-        loaded = copy.deepcopy(original_load_config(path, *args, **kwargs))
+        loaded = originals["load_config"](path, *args, **kwargs)
+        if not this_load(path):
+            return loaded
+        loaded = copy.deepcopy(loaded)
         loaded.pop("quantization", None)
         loaded.pop("quantization_config", None)
         return loaded
 
     def get_model_and_args(config, model_path=None):
-        if config.get("model_type") in ("nemotron_h_omni", "nemotron_h_nano_omni"):
+        if this_load(model_path):
             return bolt_model, "nemotron_h_omni"
-        return original_get_model_and_args(config, model_path)
+        return originals["get_model_and_args"](config, model_path)
 
-    vlm_utils.load_config = load_config
-    vlm_utils.get_model_and_args = get_model_and_args
-    try:
-        logger.info("Loading %s with the Nemotron Bolt IQ2_XXS/Q8_0/NVFP4 kernels", model_path)
-        return vlm_utils.load(model_path, trust_remote_code=False)
-    finally:
-        vlm_utils.get_model_and_args = original_get_model_and_args
-        vlm_utils.load_config = original_load_config
+    with _HOOK_LOCK:
+        originals = {
+            "load_config": vlm_utils.load_config,
+            "get_model_and_args": vlm_utils.get_model_and_args,
+        }
+        vlm_utils.load_config = load_config
+        vlm_utils.get_model_and_args = get_model_and_args
+        try:
+            logger.info("Loading %s with the Nemotron Bolt IQ2_XXS/Q8_0/NVFP4 kernels", model_path)
+            return vlm_utils.load(model_path, trust_remote_code=False)
+        finally:
+            vlm_utils.get_model_and_args = originals["get_model_and_args"]
+            vlm_utils.load_config = originals["load_config"]

@@ -107,3 +107,62 @@ def test_plain_decode_feeds_the_drafter():
     lm(mx.array([[3, 9]]), cache=cache)
     lm(mx.array([[4]]), cache=cache)
     assert seen == [((7,), 2)]
+
+
+def test_native_speculative_helpers_still_work():
+    """mlx-vlm's own helpers pass speculative_verify themselves."""
+    from omlx.patches.mlx_vlm_mtp import nemotron_omni_vlm_runtime
+
+    nemotron_omni_vlm_runtime.apply()
+    lm = _tiny_language_model()
+    cache = lm.make_cache()
+    lm(mx.array([[3, 9, 27]]), cache=cache)
+    captured, hidden, states = lm.speculative_verify_dflash_hidden(mx.array([[1, 2]]), cache, [0, 2])
+    assert len(captured) == 2 and states
+    lm.rollback_speculative_cache(cache, states, 0, 2)
+    hidden, shared, states = lm.speculative_verify_hidden(mx.array([[4, 5]]), cache)
+    assert states
+
+
+def test_bolt_loader_hooks_only_touch_their_own_load(tmp_path, monkeypatch):
+    import json
+    import threading
+
+    import mlx_vlm.utils as vlm_utils
+
+    from omlx.patches import nemotron_bolt
+    from omlx.patches.nemotron_bolt import loader
+
+    monkeypatch.setattr(nemotron_bolt, "is_supported_config", lambda c: True)
+    monkeypatch.setattr(loader, "is_supported_config", lambda c: True)
+    monkeypatch.setattr(loader, "validate_layout", lambda c: None)
+    bolt_dir, other_dir = tmp_path / "bolt", tmp_path / "other"
+    for d, cfg in ((bolt_dir, {"model_type": "nemotron_h_omni", "quantization_config": {"quant_method": "modelopt"}}),
+                   (other_dir, {"model_type": "nemotron_h_omni", "quantization_config": {"quant_method": "fp8"}})):
+        d.mkdir()
+        (d / "config.json").write_text(json.dumps(cfg))
+    seen = {}
+
+    def fake_load(path, **kwargs):
+        seen["bolt"] = vlm_utils.load_config(path)
+        seen["bolt_class"] = vlm_utils.get_model_and_args(seen["bolt"], path)[1]
+        seen["other_same_thread"] = vlm_utils.load_config(other_dir)
+        result = {}
+
+        def other_thread():
+            result["config"] = vlm_utils.load_config(bolt_dir)
+            result["class"] = vlm_utils.get_model_and_args({"model_type": "nemotron_h_omni"}, bolt_dir)[1]
+
+        t = threading.Thread(target=other_thread)
+        t.start()
+        t.join()
+        seen["other_thread"] = result
+        return "model", "processor"
+
+    monkeypatch.setattr(vlm_utils, "load", fake_load)
+    assert loader.load(bolt_dir) == ("model", "processor")
+    assert "quantization_config" not in seen["bolt"] and seen["bolt_class"] == "nemotron_h_omni"
+    assert seen["other_same_thread"]["quantization_config"]["quant_method"] == "fp8"
+    assert "quantization_config" in seen["other_thread"]["config"]
+    assert seen["other_thread"]["class"] == "nemotron_h_nano_omni"
+    assert vlm_utils.load is fake_load and vlm_utils.load_config.__module__ == "mlx_vlm.utils"

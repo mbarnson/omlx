@@ -169,3 +169,27 @@ def test_math_constants():
     # vector_eps / logit_scale reach the head unchanged.
     head = lilicorr.LiLiCorrDraftModel(lilicorr.LiLiCorrConfig.from_dict(_config())).lilicorr
     assert head.logit_scale == 8.0 and math.isclose(head.vector_eps, 1e-4)
+
+
+def test_shorter_block_than_trained(tmp_path):
+    """dflash_block_size below the checkpoint's block: fewer slots, same head."""
+    import mlx.nn as nn
+
+    from omlx.speculative.dflash import load_dflash_drafter
+
+    path = _checkpoint(tmp_path, _config())
+    target = SimpleNamespace(
+        language_model=SimpleNamespace(
+            backbone=SimpleNamespace(embeddings=nn.Embedding(256, 64)),
+            lm_head=nn.Linear(64, 256, bias=False),
+        )
+    )
+    drafter = load_dflash_drafter(str(path), target, block_size=3)
+    assert drafter.block_size == 3 and drafter.kind == "lilicorr"
+    model = drafter.model
+    slots = mx.random.normal((1, 2, 64)).astype(mx.bfloat16)
+    tokens, candidates, _ = model.propose(slots, model._logits(slots), mx.zeros((1, 64)))
+    assert tokens.shape == (1, 2) and candidates.shape == (1, 2, 4)
+    with pytest.raises(ValueError, match="trained for 3 slots"):
+        too_long = mx.random.normal((1, 4, 64)).astype(mx.bfloat16)
+        model.propose(too_long, model._logits(too_long), mx.zeros((1, 64)))
