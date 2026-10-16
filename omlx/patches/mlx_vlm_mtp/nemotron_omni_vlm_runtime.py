@@ -48,54 +48,55 @@ def apply() -> bool:
             )
         return_hidden = kwargs.pop("return_hidden", False)
         requested = kwargs.pop("capture_layer_ids", None)
-        if not return_hidden:
-            drafter = getattr(self, "_omlx_drafter", None)
-            scope = getattr(drafter, "scope_uids", None)
-            if (
-                scope
-                and requested is None
-                and inputs is not None
-                and inputs.ndim == 2
-                and inputs.shape == (len(scope), 1)
-            ):
-                # A plain decode step while a block drafter is attached: keep
-                # the committed token in the drafter's context.
-                out = original_call(
-                    self,
-                    inputs,
-                    cache=cache,
-                    inputs_embeds=inputs_embeds,
-                    capture_layer_ids=list(drafter.target_layer_ids),
-                    **kwargs,
-                )
-                drafter.observe(scope, out.hidden_states)
-                return out
-            if requested is not None:
-                kwargs["capture_layer_ids"] = requested
+        drafter = getattr(self, "_omlx_drafter", None)
+        scope = getattr(drafter, "scope_uids", None)
+        observe = (
+            not return_hidden
+            and scope
+            and requested is None
+            and inputs is not None
+            and inputs.ndim == 2
+            and inputs.shape == (len(scope), 1)
+        )
+        if observe:
+            # A plain decode step while a block drafter is attached: keep the
+            # committed token in the drafter's context.
+            requested = list(drafter.target_layer_ids)
+        if requested is None:
             return original_call(
-                self, inputs, cache=cache, inputs_embeds=inputs_embeds, **kwargs
+                self,
+                inputs,
+                cache=cache,
+                inputs_embeds=inputs_embeds,
+                return_hidden=return_hidden,
+                **kwargs,
             )
-
-        requested = list(requested or [])
+        # mlx-vlm returns captures in layer order; every caller here (prefill
+        # seeding, observed decode, verify) gets them in the order it asked.
+        requested = list(requested)
         layers = sorted(set(requested))
+        if return_hidden:
+            kwargs["speculative_verify"] = True
         out = original_call(
             self,
             inputs,
             cache=cache,
             inputs_embeds=inputs_embeds,
             capture_layer_ids=layers,
-            speculative_verify=True,
-            return_hidden=True,
+            return_hidden=return_hidden,
             **kwargs,
         )
         hidden = list(out.hidden_states or [])
-        by_layer = dict(zip(layers, hidden[:-1]))
-        return LanguageModelOutput(
+        by_layer = dict(zip(layers, hidden[: len(layers)]))
+        out = LanguageModelOutput(
             logits=out.logits,
-            hidden_states=[by_layer[i] for i in requested] + hidden[-1:],
+            hidden_states=[by_layer[i] for i in requested] + hidden[len(layers) :],
             gdn_states=out.gdn_states,
             shared_kv_states=out.shared_kv_states,
         )
+        if observe:
+            drafter.observe(scope, out.hidden_states)
+        return out
 
     call._omlx_dflash_contract = True
     cls.__call__ = call

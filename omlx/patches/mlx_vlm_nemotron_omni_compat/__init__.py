@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -26,15 +27,27 @@ MODEL_TYPES = ("nemotron_h_omni", "nemotron_h_nano_omni", "nemotronh_nano_omni_r
 _VENDOR_MLX_VLM = Path(__file__).resolve().parent / "vendor" / "mlx_vlm"
 _PACKAGES = ("nemotron_h", "nemotron_h_nano_omni")
 _APPLIED = False
+# Engine loads and oQ jobs can both apply this on a cold process; module
+# replacement must not interleave with another thread's imports.
+_LOCK = threading.RLock()
+
+
+_UPSTREAM: bool | None = None
 
 
 def upstream_supported() -> bool:
-    """True when the installed mlx-vlm already includes #2528."""
-    try:
-        from mlx_vlm.utils import MODEL_REMAPPING
-    except Exception:  # noqa: BLE001
-        return False
-    return MODEL_REMAPPING.get("nemotron_h_omni") == "nemotron_h_nano_omni"
+    """True when the installed mlx-vlm already includes #2528.
+
+    Decided before this patch adds its own remaps, then remembered.
+    """
+    global _UPSTREAM
+    if _UPSTREAM is None:
+        try:
+            from mlx_vlm.utils import MODEL_REMAPPING
+        except Exception:  # noqa: BLE001
+            return False
+        _UPSTREAM = MODEL_REMAPPING.get("nemotron_h_omni") == "nemotron_h_nano_omni"
+    return _UPSTREAM
 
 
 def _append_package_path(package: Any, path: Path) -> None:
@@ -48,6 +61,11 @@ def _append_package_path(package: Any, path: Path) -> None:
 
 def apply_mlx_vlm_nemotron_omni_compat_patch() -> bool:
     """Expose the vendored Nemotron Omni packages through ``mlx_vlm.models``."""
+    with _LOCK:
+        return _apply()
+
+
+def _apply() -> bool:
     global _APPLIED
     if _APPLIED:
         return False

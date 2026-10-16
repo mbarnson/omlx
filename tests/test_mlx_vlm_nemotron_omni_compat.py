@@ -166,3 +166,69 @@ def test_bolt_loader_hooks_only_touch_their_own_load(tmp_path, monkeypatch):
     assert "quantization_config" in seen["other_thread"]["config"]
     assert seen["other_thread"]["class"] == "nemotron_h_nano_omni"
     assert vlm_utils.load is fake_load and vlm_utils.load_config.__module__ == "mlx_vlm.utils"
+
+
+def test_captures_follow_requested_order_on_every_path():
+    from omlx.patches.mlx_vlm_mtp import nemotron_omni_vlm_runtime
+
+    nemotron_omni_vlm_runtime.apply()
+    lm = _tiny_language_model()
+    ids = mx.array([[3, 9, 27]])
+    sink = []
+    lm.backbone(ids, cache=lm.make_cache(), capture_layer_ids=[0, 2], hidden_sink=sink)
+    # Prefill seeding (captures only).
+    seed = lm(ids, cache=lm.make_cache(), capture_layer_ids=[2, 0]).hidden_states
+    assert len(seed) == 2
+    assert mx.allclose(seed[0], sink[1]).item() and mx.allclose(seed[1], sink[0]).item()
+    # Observed plain decode.
+    seen = []
+    lm._omlx_drafter = type(
+        "D", (), {"scope_uids": (1,), "target_layer_ids": [2, 0],
+                  "observe": lambda self, scope, captured: seen.append(captured)}
+    )()
+    cache = lm.make_cache()
+    lm(ids[:, :2], cache=cache)
+    lm(ids[:, 2:], cache=cache)
+    step = []
+    lm.backbone(ids, cache=lm.make_cache(), capture_layer_ids=[0, 2], hidden_sink=step)
+
+    def nearer(got, want, other):
+        return float(mx.abs(got - want).max()) < float(mx.abs(got - other).max())
+
+    layer0, layer2 = step[0][:, -1:], step[1][:, -1:]
+    assert nearer(seen[0][0], layer2, layer0) and nearer(seen[0][1], layer0, layer2)
+    del lm._omlx_drafter
+    # Verify: requested order, then the final hidden state.
+    out = lm(ids, cache=lm.make_cache(), return_hidden=True, capture_layer_ids=[2, 0])
+    assert len(out.hidden_states) == 3
+    assert nearer(out.hidden_states[0], sink[1], sink[0])
+
+
+def test_concurrent_first_application(monkeypatch):
+    import threading
+
+    import omlx.patches.mlx_vlm_nemotron_omni_compat as compat
+
+    if compat.upstream_supported():
+        pytest.skip("installed mlx-vlm already has Nemotron Omni")
+    monkeypatch.setattr(compat, "_APPLIED", False)
+    errors, results = [], []
+    barrier = threading.Barrier(4)
+
+    def worker():
+        try:
+            barrier.wait()
+            results.append(compat.apply_mlx_vlm_nemotron_omni_compat_patch())
+            from mlx_vlm.utils import get_model_and_args
+
+            get_model_and_args({"model_type": "nemotron_h_omni"})
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert results.count(True) == 1 and results.count(False) == 3
