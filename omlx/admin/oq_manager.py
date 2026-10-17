@@ -239,7 +239,7 @@ class OQManager:
                             ).get("model_type", "")
                             if not mt:
                                 continue
-                            tc = config.get("text_config", {})
+                            tc = config.get("text_config") or config.get("llm_config") or {}
                             is_v41 = config.get("model_type") == "deepseek_v41"
                             has_mtp = _has_mtp_heads(
                                 config

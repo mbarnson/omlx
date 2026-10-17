@@ -87,6 +87,7 @@ _RUNTIME_PATCHES: tuple[str, ...] = (
     "gemma4_vlm_runtime",
     "inkling_vlm_runtime",
     "glm5_next_vlm_runtime",
+    "nemotron_omni_vlm_runtime",
 )
 
 # Which runtime sub-patch belongs to which ``model_type``. These patches
@@ -104,6 +105,9 @@ _RUNTIME_PATCHES_BY_TYPE: dict[str, tuple[str, ...]] = {
     "inkling_mm_model": ("inkling_vlm_runtime",),
     "glm5_next": ("glm5_next_vlm_runtime",),
     "qwen4_exp": (),
+    "nemotron_h_omni": ("nemotron_omni_vlm_runtime",),
+    "nemotron_h_nano_omni": ("nemotron_omni_vlm_runtime",),
+    "nemotronh_nano_omni_reasoning_v3": ("nemotron_omni_vlm_runtime",),
 }
 
 

@@ -50,7 +50,7 @@ def test_dflash_draft_filter_claims_muse_glimmer_assistant():
     assert "DFLASH_DRAFTER_CONFIG_MODEL_TYPES.has(configType)" in body
     # DFlash 2 checkpoints are versioned ("-DFlash2"), so the name heuristic
     # must accept an optional numeric suffix after the "dflash" token.
-    assert "dflash[0-9]*($|[-_/\\s])" in body
+    assert "(dflash[0-9]*|lilicorr)($|[-_/\\s])" in body
     assert "'muse_glimmer_assistant'" in js.split(
         "DFLASH_DRAFTER_CONFIG_MODEL_TYPES = new Set([", 1
     )[1].split("])", 1)[0]
@@ -62,3 +62,16 @@ def test_vlm_mtp_set_does_not_claim_muse_glimmer_assistant():
         "VLM_MTP_DRAFTER_CONFIG_MODEL_TYPES = new Set([", 1
     )[1].split("])", 1)[0]
     assert "muse_glimmer_assistant" not in vlm_mtp_set
+
+
+def test_dflash_draft_filter_claims_lilicorr():
+    js = _dashboard_js()
+    body = _method_block(
+        js,
+        "isDflashDraftModel(model) {",
+        "isVlmMtpDraftModel(",
+    )
+
+    # NVIDIA's LiLiCorr drafters ("...-24GB-LiLiCorr") declare model_type
+    # qwen3 and carry no "dflash" token; the name heuristic claims them.
+    assert "lilicorr" in body

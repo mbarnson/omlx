@@ -158,6 +158,8 @@ class DFlashDrafter:
 
     @property
     def kind(self) -> str:
+        if hasattr(self.model, "lilicorr"):
+            return "lilicorr"
         return "dflash2" if hasattr(self.model, "candidate_selector") else "dflash"
 
     def _row(self, uid: Any) -> _RowContext:
@@ -552,6 +554,27 @@ class DFlashDrafter:
         self._cohort = _Cohort(uids=uids, keys=keys, values=values, pos=pos)
         return self._cohort
 
+    def _lilicorr_anchors(self, rows, h_ctx, lengths, counts) -> mx.array:
+        """LiLiCorr's anchor: the projected context row just before each block.
+
+        That is the newest committed row: the last new context row, or with
+        ``counts`` the last committed one; a row with no new context reuses
+        the newest row of its history.
+        """
+        width = int(h_ctx.shape[-1])
+        out = []
+        for index, ((_state, row, *_), n) in enumerate(zip(rows, lengths)):
+            if counts is not None:
+                last = mx.maximum(counts[index].astype(mx.int32).reshape(-1) - 1, 0)
+                out.append(mx.take(h_ctx[index], last, axis=0))
+            elif n:
+                out.append(h_ctx[index, n - 1 : n])
+            elif row.history:
+                out.append(row.history[-1][0, -1:].astype(h_ctx.dtype))
+            else:
+                out.append(mx.zeros((1, width), h_ctx.dtype))
+        return mx.concatenate(out)
+
     def _draft_batched(self, rows: Sequence[tuple], counts=None, commit=True):
         """One draft forward for every row; mirrors DFlashAttention rowwise math.
 
@@ -628,6 +651,9 @@ class DFlashDrafter:
                 parts.append(part)
             h_ctx = mx.concatenate(parts, axis=0)
 
+        lilicorr = getattr(model, "lilicorr", None)
+        if lilicorr is not None:
+            anchor_rows = self._lilicorr_anchors(rows, h_ctx, lengths, counts)
         anchors = mx.concatenate([anchor for _, _, _, anchor, _ in rows]).astype(
             mx.int32
         )
@@ -674,7 +700,15 @@ class DFlashDrafter:
         ring_valid = (
             (pos >= 0) & (pos >= (totals - slots)[:, None]) & (pos < totals[:, None])
         )
-        if self.causal:
+        if lilicorr is not None and not self.causal:
+            # LiLiCorr was trained with a per-query window: block query j
+            # sees context positions >= total + j - slots.
+            first = (totals - slots)[:, None, None] + mx.arange(block)[None, :, None]
+            ctx = ring_valid[:, None, :] & (pos[:, None, :] >= first)
+            mask = mx.concatenate(
+                [ctx, mx.ones((batch, block, block), dtype=mx.bool_)], axis=2
+            )[:, None]
+        elif self.causal:
             # Each block query sees the context and the block rows up to it.
             mask = mx.concatenate(
                 [
@@ -778,7 +812,11 @@ class DFlashDrafter:
         logits = model._logits(draft_hidden)
         samplers = [sampler for *_, sampler in rows]
         selector = getattr(model, "candidate_selector", None)
-        if markov is not None:
+        if lilicorr is not None:
+            proposals = selection.select_lilicorr(
+                model, draft_hidden, logits, anchor_rows, samplers
+            )
+        elif markov is not None:
             proposals = selection.select_markov(markov, logits, anchors, samplers)
         elif selector is not None and selection.fused_select_eligible(
             selector, draft_hidden

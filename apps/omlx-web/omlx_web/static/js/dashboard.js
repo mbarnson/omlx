@@ -2005,8 +2005,9 @@
                     return true;
                 }
                 // DFlash 2 checkpoints are versioned ("-DFlash2"), so allow an
-                // optional numeric suffix after the "dflash" token.
-                return /(^|[-_/\s])dflash[0-9]*($|[-_/\s])/i.test(this.draftModelSearchText(model));
+                // optional numeric suffix after the "dflash" token. NVIDIA's
+                // LiLiCorr drafters are DFlash drafters with a reranking head.
+                return /(^|[-_/\s])(dflash[0-9]*|lilicorr)($|[-_/\s])/i.test(this.draftModelSearchText(model));
             },
 
             isVlmMtpDraftModel(model) {

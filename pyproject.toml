@@ -248,6 +248,8 @@ include = ["omlx*"]
 "omlx_web" = ["templates/**/*.html", "static/**/*", "i18n/*.json"]
 "omlx.eval" = ["data/*.jsonl"]
 "omlx.patches.deepseek_v41" = ["LICENSE"]
+"omlx.patches.nemotron_bolt" = ["LICENSE"]
+"omlx.patches.mlx_vlm_nemotron_omni_compat" = ["vendor/mlx_vlm/LICENSE"]
 "omlx.custom_kernels.glm_moe_dsa" = ["*.metallib", "*.so"]
 "omlx.custom_kernels.decode_fast" = ["*.metallib", "*.so"]
 "omlx.custom_kernels.minimax_m3" = ["*.metallib", "*.so"]
@@ -273,6 +275,12 @@ ignore = ["E501", "B905"]
 # Vendored upstream files (mlx-vlm copies under patches) keep their
 # original formatting for pin-bump diffability.
 extend-exclude = ["omlx/patches/*/vendor"]
+
+[tool.ruff.per-file-ignores]
+# Kernel wrappers name tensor dimensions after their Metal template
+# parameters (H, O, I, E, L, F, K). The file is also published standalone as
+# a Hugging Face model_file, so it keeps one form for both.
+"omlx/patches/nemotron_bolt/model.py" = ["N803", "N806", "E741"]
 
 [tool.mypy]
 python_version = "3.11"
